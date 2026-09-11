@@ -12,8 +12,8 @@ dependencies:
   - libstdcxx-ng=11.2.0=h1234567_1
   - ncurses=6.4=h6a678d5_0
   - openssl=3.0.15=h5eee18b_0
-  - pip=24.2=py39h06a4308_0
-  - python=3.9.20=he870216_1
+  - pip=24.2=py311h06a4308_0
+  - python=3.11.6=he870216_0
   - readline=8.2=h5eee18b_0
   - setuptools=75.1.0=py39h06a4308_0
   - sqlite=3.45.3=h5eee18b_0
@@ -98,5 +98,4 @@ dependencies:
       - urllib3==1.26.14
       - virtualenv==20.26.3
       - watchdog==5.0.0
-      - xformers==0.0.27.post2
       - zipp==3.20.0

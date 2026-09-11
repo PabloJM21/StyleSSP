@@ -50,9 +50,15 @@ from ip_adapter.ip_adapter_instruct import IPAdapterInstructSDXL, IPAdapterInstr
 from src.frequency_utils import freq_exp
 
 
+processor = None
+model = None
+
+
 ''' This function may have been modified by [InstantStyle-plus][https://github.com/instantX-research/InstantStyle-Plus]'''
 def generate_caption(
     image: Image.Image,
+    caption_processor=None,
+    caption_model=None,
     text: str = None,
     decoding_method: str = "Nucleus sampling",
     temperature: float = 1.0,
@@ -63,13 +69,17 @@ def generate_caption(
     num_beams: int = 5,
     top_p: float = 0.9,
 ) -> str:
+    active_processor = caption_processor if caption_processor is not None else processor
+    active_model = caption_model if caption_model is not None else model
+    if active_processor is None or active_model is None:
+        raise ValueError("Caption processor/model are not initialized. Pass them to generate_caption().")
     
     if text is not None:
-        inputs = processor(images=image, text=text, return_tensors="pt").to("cuda", torch.float16)
-        generated_ids = model.generate(**inputs)
+        inputs = active_processor(images=image, text=text, return_tensors="pt").to("cuda", torch.float16)
+        generated_ids = active_model.generate(**inputs)
     else:
-        inputs = processor(images=image, return_tensors="pt").to("cuda", torch.float16)
-        generated_ids = model.generate(
+        inputs = active_processor(images=image, return_tensors="pt").to("cuda", torch.float16)
+        generated_ids = active_model.generate(
             pixel_values=inputs.pixel_values,
             do_sample=decoding_method == "Nucleus sampling",
             temperature=temperature,
@@ -80,7 +90,7 @@ def generate_caption(
             num_beams=num_beams,
             top_p=top_p,
         )
-    result = processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+    result = active_processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
     return result
 
 ''' This function may have been modified by [InstantStyle-plus][https://github.com/instantX-research/InstantStyle-Plus]'''
@@ -107,16 +117,18 @@ def resize_img(input_image, max_side=1280, min_side=1024, size=None,
         input_image = Image.fromarray(res)
     return input_image
 
-def get_depth_map(image):
-    depth_estimator = DPTForDepthEstimation.from_pretrained("Intel/dpt-hybrid-midas").to("cuda")
-    feature_extractor = DPTFeatureExtractor.from_pretrained("Intel/dpt-hybrid-midas")
+def get_depth_map(image, depth_estimator=None, feature_extractor=None, target_resolution=1024):
+    if depth_estimator is None:
+        depth_estimator = DPTForDepthEstimation.from_pretrained("Intel/dpt-hybrid-midas").to("cuda")
+    if feature_extractor is None:
+        feature_extractor = DPTFeatureExtractor.from_pretrained("Intel/dpt-hybrid-midas")
     image = feature_extractor(images=image, return_tensors="pt").pixel_values.to("cuda")
     with torch.no_grad(), torch.autocast("cuda"):
         depth_map = depth_estimator(image).predicted_depth
 
     depth_map = torch.nn.functional.interpolate(
         depth_map.unsqueeze(1),
-        size=(1024, 1024),
+        size=(target_resolution, target_resolution),
         mode="bicubic",
         align_corners=False,
     )
@@ -223,18 +235,11 @@ if __name__ == "__main__":
     ori_img_size = content_image.size
     content_image = content_image.resize((config.resolution, config.resolution))
 
-    # use BLIP Model to get the prompt of style image
-    if config.style_image_prompt is None:
-        style_image_prompt = generate_caption(style_image)
-    else:
-        style_image_prompt = config.style_image_prompt
-
     # use IP-Instruct Model get embedding of style information and content information
     style_embeddings_instruct = ip_instruct_model.get_decouple_embeds(pil_image=style_image,prompt="",query=style_instruct_prompt)
     style_content_embeddings = ip_instruct_model.get_decouple_embeds(pil_image=style_image,prompt="",query=content_instruct_prompt)
-    print(style_image_prompt)
 
-    content_image_prompt = generate_caption(content_image)
+    content_image_prompt = generate_caption(content_image, caption_processor=processor, caption_model=model)
     content_embeddings_instruct = ip_instruct_model.get_decouple_embeds(pil_image=content_image,prompt="",query=content_instruct_prompt)
     content_style_instruct = ip_instruct_model.get_decouple_embeds(pil_image=content_image,prompt="",query=style_instruct_prompt)
     print(content_image_prompt)
@@ -415,7 +420,6 @@ if __name__ == "__main__":
     output = pipe_inference(
         prompt=content_image_prompt,                    # prompt used for inversion
         negative_prompt="watermark, lowres, low quality, worst quality, deformed, glitch, low contrast, noisy, saturation, blurry",
-        # negative_prompt_2=style_image_prompt,
         num_inference_steps=config.num_inference_steps,
         eta=1.0,
         mask_image=entire_mask,

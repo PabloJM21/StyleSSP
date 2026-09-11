@@ -65,7 +65,6 @@ class RunConfig:
     result_path = "./results"
     style_image_dir = "path/to/your/style/image/file" # such as ./data/style/7.jpg
     content_image_dir = "path/to/your/style/image/content/file" # such as ./data/content/7.jpg
-    style_image_prompt = None # the prompt for style image, if None, use blip2 to generate
     resolution: int = 1024
 
     def __post_init__(self):

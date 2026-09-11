@@ -73,5 +73,4 @@ typing-inspect==0.9.0
 urllib3==1.26.14
 virtualenv==20.26.3
 watchdog==5.0.0
-xformers==0.0.26.post1
 zipp==3.20.0
