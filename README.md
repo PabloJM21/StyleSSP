@@ -107,13 +107,63 @@ The original single-image script remains available via `python infer_style.py`, 
 
 ### Pipeline Workflow
 
-The batch CLI runs in five stages:
+This repository’s style transfer has three conceptual stages, regardless of wrapper scripts:
 
-1. Checkpoint prefetch: downloads and caches all required models (`Salesforce/blip2-flan-t5-xl`, `laion/CLIP-ViT-H-14-laion2B-s32B-b79K`, `Intel/dpt-hybrid-midas`, `madebyollin/sdxl-vae-fp16-fix`, `h94/IP-Adapter`, `CiaraRowles/IP-Adapter-Instruct`, `TheMistoAI/MistoLine`, `xinsir/controlnet-tile-sdxl-1.0`, `diffusers/controlnet-depth-sdxl-1.0-small`, and the selected base model).
-2. Style/content feature setup: loads the style reference image and computes decoupled style/content embeddings with IP-Adapter-Instruct.
-3. Content prompt setup: uses `--content_image_prompt` if provided; otherwise infers one prompt per content image using BLIP.
-4. Inversion and latent editing: inverts the content image into latent space and applies the StyleSSP frequency-domain latent manipulation.
-5. Controlled reconstruction: reconstructs with ControlNet (`tile`, `canny`, `depth`, or combinations) and applies the direct influence scales (`guidance_scale`, `style_guidance_scale`, `content_guidance_scale`).
+1. Build conditions from content and style inputs.
+2. Move content into latent space (inversion) and apply StyleSSP latent edits.
+3. Reconstruct with SDXL + ControlNet + IP-Adapter conditions.
+
+In the current batch CLI, stage 3 is executed with `StableDiffusionXLControlNetInpaintPipeline` (from `pipeline_controlnet_inpaint_sd_xl.py`).
+
+#### Core Process Details (Current Path: Inpaint)
+
+1. **Style and content descriptors are extracted**
+  * Style image and content image are encoded by IP-Adapter-Instruct into decoupled embeddings (style branch and composition branch).
+  * The content text prompt is either user-defined (`--content_image_prompt`) or inferred per image with BLIP.
+
+2. **Content latent is initialized by inversion**
+  * `inversion.py` maps the content image into the diffusion latent trajectory.
+  * StyleSSP then applies frequency-domain latent manipulation (`freq_exp`) before final reconstruction.
+
+3. **Inpaint pipeline prepares all conditioning tensors**
+  * `image`: the content image at target resolution.
+  * `mask_image`: full-white mask in this workflow, so the full frame is open to stylization.
+  * `control_image`: structure hint(s) from tile/canny/depth (single map or list for multi-control).
+  * `ip_adapter_image`: the selected style reference image.
+  * `latents`: edited inversion latent (`latent_l`) passed explicitly.
+
+4. **Denoising loop fuses text, control, and style signals**
+  * Text guidance uses `guidance_scale` through classifier-free guidance.
+  * ControlNet contribution is scaled by `controlnet_conditioning_scale`.
+  * Additional style/content steering is injected through `style_guidance_scale` and `content_guidance_scale` (the pipeline `cond_fn` branch computes similarity-driven guidance and adjusts latent updates).
+  * Optional `inv_guidance` and `npi_interp` influence latent initialization and negative-prompt interpolation behavior.
+
+5. **Decode and write output**
+  * Final latents are decoded by the SDXL VAE and saved as the stylized result.
+
+#### Why Inpaint Is Used In The Batch Script
+
+The batch script currently builds `StableDiffusionXLControlNetInpaintPipeline` explicitly for reconstruction because it offers one place to combine all of the following at once: mask conditioning, one-or-many ControlNet condition images, explicit latent injection, and IP-Adapter style image conditioning.
+
+#### How The Other Two Pipelines Would Work
+
+1. **`StableDiffusionXLImg2ImgPipeline` (from `pipeline_controlnet_sd_xl_img2img.py`)**
+  * This is an img2img-style reconstruction path that starts from an input image and adds noise controlled by `strength`.
+  * It supports text guidance and IP-Adapter image conditioning in its denoising loop.
+  * Compared to inpaint, it does not use a mask branch (`mask_image` / `masked_image_latents`) and therefore has a simpler latent preparation path.
+  * In this repository, this pipeline is mainly the inversion/inference companion loaded via `src/utils/enums_utils.py` and `get_pipes(...)`.
+
+2. **`StableDiffusionXLControlNetImg2ImgPipeline` (from `pipeline_controlnet_sd_xl_img2img_plus.py`)**
+  * This extends img2img with explicit ControlNet image conditioning (`control_image`) and ControlNet scaling (`controlnet_conditioning_scale`).
+  * It includes options like `guess_mode` and supports both single and multi-ControlNet settings.
+  * It also keeps style/content guidance hooks (`style_guidance_scale`, `content_guidance_scale`) for additional embedding-driven steering.
+  * Conceptually, it sits between plain img2img and inpaint: it has ControlNet conditioning like inpaint, but no mask-specific inpaint branch.
+
+#### Practical Interpretation
+
+* **Inpaint (current):** strongest structural control surface in this repo because mask + ControlNet + explicit latent injection are all active together.
+* **Img2img:** simpler transform-from-image route, useful when mask semantics are unnecessary.
+* **Img2img_plus:** img2img with stronger structure conditioning through ControlNet, but still without the inpaint mask branch.
 
 The optional seg dicts affect only the style-reference branch:
 
