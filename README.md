@@ -68,10 +68,35 @@ Prompt and influence flags:
 Model and runtime flags:
 
 * `--model_type` (`SDXL` by default)
-* `--scheduler_type` (`DDIM` by default)
+* `--scheduler_type` (`EULER` by default)
 * `--choose_pipeline` (`""` default or `sd15`)
 * `--control_type` (`tile`, `canny`, `depth`, `combine`, `tile_canny`)
 * `--resolution`, `--seed`, `--num_inference_steps`, `--num_inversion_steps`, `--num_renoise_steps`, `--max_num_renoise_steps_first_step`
+
+## Why StyleSSP defaults to Euler
+
+StyleSSP uses a *renoise inversion* procedure.
+This procedure requires:
+
+- `step_and_update_noise`
+- `inv_step`
+- custom noise tracking (`noise_list`)
+- sigma-based ancestral updates
+- friendly inversion support
+
+These features exist only in the Euler scheduler.
+
+Your DDIM scheduler is a *standard DDIM with a custom `inv_step`*, but it lacks:
+
+- noise correction
+- sigma_up / sigma_down ancestral logic
+- noise optimization
+- `step_and_update_noise`
+- friendly inversion hooks
+
+Therefore:
+
+# ✔ The correct scheduler for StyleSSP is `MyEulerAncestralDiscreteScheduler`.
 
 Complete example with all relevant flags:
 
@@ -82,7 +107,7 @@ python scripts/batch_canny_depth_control.py \
   --output_dir results \
   --style_image data/style/7.jpg \
   --model_type SDXL \
-  --scheduler_type DDIM \
+  --scheduler_type EULER \
   --choose_pipeline "" \
   --control_type tile_canny \
   --resolution 1024 \

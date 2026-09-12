@@ -62,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--model_type", type=str, default="SDXL", choices=MODEL_TYPE_CHOICES)
-    parser.add_argument("--scheduler_type", type=str, default="DDIM", choices=SCHEDULER_TYPE_CHOICES)
+    parser.add_argument("--scheduler_type", type=str, default="EULER", choices=SCHEDULER_TYPE_CHOICES)
     parser.add_argument("--choose_pipeline", type=str, default="", choices=["", "sd15"])
     parser.add_argument("--control_type", type=str, default="tile_canny", choices=CONTROL_TYPE_CHOICES)
     parser.add_argument("--resolution", type=int, default=1024)
