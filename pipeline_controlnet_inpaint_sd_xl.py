@@ -697,7 +697,7 @@ class StableDiffusionXLControlNetInpaintPipeline(
 
         sample = sample / self.vae.config.scaling_factor
 
-        tmp_dtype = torch.float16
+        tmp_dtype = torch.float32
         self.vae.to(dtype=tmp_dtype)
         sample = sample.to(dtype=tmp_dtype)
 
@@ -732,7 +732,7 @@ class StableDiffusionXLControlNetInpaintPipeline(
             print("DEBUG IP clip_image has NaN:", torch.isnan(clip_image).any().item())
             # run IP instruct in fp32 for stability
             clip_image = clip_image.to(torch.float32)
-            ip_instruct_model.to(torch.float32)
+            #ip_instruct_model.to(torch.float32)
             image_embeddings_clip = ip_instruct_model.get_decouple_embeds(
                 clip_image=clip_image, prompt="", query="use the style from the image"
             )
