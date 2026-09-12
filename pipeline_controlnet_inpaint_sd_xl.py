@@ -755,8 +755,10 @@ class StableDiffusionXLControlNetInpaintPipeline(
 
         if style_embeddings_clip is not None or content_embeddings_clip is not None:
             loss = loss.to(dtype=latents.dtype)
-            if loss.requires_grad:
-                grads = -torch.autograd.grad(loss, latents)[0]
+            
+            # surrogate gradient because VAE/CLIP decode is no-grad
+            grads = -loss * torch.ones_like(latents)
+
 
             sim = (image_embeddings_clip @ style_embeddings_clip.mT).mean()
             if sim > 0.20 and sim > best_style_sim:
