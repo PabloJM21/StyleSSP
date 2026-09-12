@@ -1170,49 +1170,70 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
         content_guidance_scale,
         best_content_sim,
     ):
-        
-        latents = latents.detach().requires_grad_(True) # torch.Size([1, 4, 128, 128])
 
-        latent_model_input = self.scheduler.scale_model_input(latents, timestep) # torch.Size([1, 4, 128, 128])
-        
-        # predict the noise residual
+        latents = latents.detach().requires_grad_(True)
+
+        ### DEBUG
+        print("DEBUG latents has NaN:", torch.isnan(latents).any().item())
+        print("DEBUG latents min/max:", latents.min().item(), latents.max().item())
+
+        latent_model_input = self.scheduler.scale_model_input(latents, timestep)
+
         noise_pred = self.unet(
-                        latent_model_input,
-                        timestep,
-                        encoder_hidden_states=prompt_embeds,
-                        cross_attention_kwargs=self.cross_attention_kwargs,
-                        down_block_additional_residuals=down_block_res_samples,
-                        mid_block_additional_residual=mid_block_res_sample,
-                        added_cond_kwargs=added_cond_kwargs,
-                    ).sample
-        
+            latent_model_input,
+            timestep,
+            encoder_hidden_states=prompt_embeds,
+            cross_attention_kwargs=self.cross_attention_kwargs,
+            down_block_additional_residuals=down_block_res_samples,
+            mid_block_additional_residual=mid_block_res_sample,
+            added_cond_kwargs=added_cond_kwargs,
+        ).sample
+
         alpha_prod_t = self.scheduler.alphas_cumprod[timestep]
         beta_prod_t = 1 - alpha_prod_t
-        # compute predicted original sample from predicted noise also called
-        # "predicted x_0" of formula (12) from https://arxiv.org/pdf/2010.02502.pdf
-        pred_original_sample = (latents - beta_prod_t ** (0.5) * noise_pred) / alpha_prod_t ** (0.5)
-        
-        #sample = pred_original_sample
-        fac = torch.sqrt(beta_prod_t)
-        sample = pred_original_sample * (fac) + latents * (1 - fac)
-        
-        sample = 1 / self.vae.config.scaling_factor * sample
-        
-        # important to cast into fp32 to avoid nan
-        self.vae.to(dtype=torch.float32)
-        sample = sample.to(dtype=torch.float32)
-        image = self.vae.decode(sample).sample
-        #image = image.to(dtype=latents.dtype)
-            
-        image = (image / 2 + 0.5).clamp(0, 1) # torch.Size([2, 3, 1024, 1024]), [0, 1]
-        
-        #vis_image = image.detach().cpu().permute(0, 2, 3, 1).numpy() # (2, 1024, 1024, 3)
-        #vis_image = (vis_image * 255).round().astype("uint8")
-        #vis_image = Image.fromarray(vis_image[0])
-        #vis_image.save("image.jpg")
 
-        _, content_output, image_embeddings_clip = self.clip_model(self.normalize(transforms.Resize(224)(image[0:1])))
-        
+        pred_original_sample = (latents - beta_prod_t ** 0.5 * noise_pred) / alpha_prod_t ** 0.5
+
+        fac = torch.sqrt(beta_prod_t)
+        sample = pred_original_sample * fac + latents * (1 - fac)
+
+        sample = sample / self.vae.config.scaling_factor
+
+        # VAE decode in fp32
+        self.vae.to(dtype=torch.float32)
+        sample = sample.to(torch.float32)
+
+        ### DEBUG
+        print("DEBUG sample has NaN:", torch.isnan(sample).any().item())
+        print("DEBUG sample min/max:", sample.min().item(), sample.max().item())
+
+        image = self.vae.decode(sample).sample
+
+        ### DEBUG
+        print("DEBUG image has NaN:", torch.isnan(image).any().item())
+        print("DEBUG image min/max:", image.min().item(), image.max().item())
+
+        image = (image / 2 + 0.5).clamp(0, 1)
+
+        ### DEBUG
+        print("DEBUG image after clamp has NaN:", torch.isnan(image).any().item())
+
+        # CLIP input
+        clip_input = self.normalize(transforms.Resize(224)(image[0:1]))
+
+        ### DEBUG
+        print("DEBUG clip_input has NaN:", torch.isnan(clip_input).any().item())
+
+        # Force CLIP to run in float32
+        clip_input = clip_input.to(torch.float32)
+        self.clip_model.to(torch.float32)
+
+        _, content_output, image_embeddings_clip = self.clip_model(clip_input)
+
+        ### DEBUG
+        print("DEBUG image_embeddings_clip has NaN:", torch.isnan(image_embeddings_clip).any().item())
+        print("DEBUG image_embeddings_clip norm:", image_embeddings_clip.norm(dim=-1))
+
         loss = 0.0
         if style_embeddings_clip is not None:
             style_loss = spherical_dist_loss(image_embeddings_clip, style_embeddings_clip).mean() * style_guidance_scale
@@ -1220,21 +1241,23 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
         if content_embeddings_clip is not None:
             content_loss = spherical_dist_loss(content_output, content_embeddings_clip).mean() * content_guidance_scale
             loss += content_loss
+
         if style_embeddings_clip is not None or content_embeddings_clip is not None:
             loss = loss.to(dtype=latents.dtype)
             grads = -torch.autograd.grad(loss, latents)[0]
-            
-            sim = (image_embeddings_clip@style_embeddings_clip.T).mean()
+
+            sim = (image_embeddings_clip @ style_embeddings_clip.T).mean()
             if sim > 0.20 and sim > best_style_sim:
                 best_style_sim = sim
-            
-            sim = (content_output@content_embeddings_clip.T).mean()
+
+            sim = (content_output @ content_embeddings_clip.T).mean()
             if sim > 0.20 and sim > best_content_sim:
                 best_content_sim = sim
 
             noise_pred = noise_pred_original - torch.sqrt(beta_prod_t) * grads
 
         return noise_pred, latents, best_style_sim, best_content_sim
+
     
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
