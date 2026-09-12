@@ -648,7 +648,6 @@ class StableDiffusionXLControlNetInpaintPipeline(
             extra_step_kwargs["generator"] = generator
         return extra_step_kwargs
 
-    # this function is used to conduct guidance in denoise step
     @torch.enable_grad()
     def cond_fn(
         self,
@@ -699,7 +698,8 @@ class StableDiffusionXLControlNetInpaintPipeline(
         # clamp before VAE decode
         sample = torch.clamp(sample, -10.0, 10.0)
 
-        tmp_dtype = torch.float32
+        # decode in fp16 to avoid OOM, clamp prevents overflow
+        tmp_dtype = torch.float16
         self.vae.to(dtype=tmp_dtype)
         sample = sample.to(dtype=tmp_dtype)
 
@@ -721,20 +721,15 @@ class StableDiffusionXLControlNetInpaintPipeline(
         if ip_instruct_model is None:
             set_requires_grad(CSD_model, False)
             clip_input = self.normalize(transforms.Resize(224)(image[0:1]))
-            # DEBUG: CSD clip input
             print("DEBUG CSD clip_input has NaN:", torch.isnan(clip_input).any().item())
-            # run CSD in fp32 for stability
             clip_input = clip_input.to(torch.float32)
             CSD_model.to(torch.float32)
             _, content_output, image_embeddings_clip = CSD_model(clip_input)
         else:
             image_tensor = transforms.Resize(224)(image[0:1])
             clip_image = image_tensor.to(self.device, dtype=tmp_dtype)
-            # DEBUG: IP clip_image
             print("DEBUG IP clip_image has NaN:", torch.isnan(clip_image).any().item())
-            # run IP instruct in fp32 for stability
             clip_image = clip_image.to(torch.float32)
-            #ip_instruct_model.to(torch.float32)
             image_embeddings_clip = ip_instruct_model.get_decouple_embeds(
                 clip_image=clip_image, prompt="", query="use the style from the image"
             )
@@ -742,7 +737,6 @@ class StableDiffusionXLControlNetInpaintPipeline(
                 clip_image=clip_image, prompt="", query="use the composition from the image"
             )
 
-        # DEBUG: embeddings
         print("DEBUG image_embeddings_clip has NaN:", torch.isnan(image_embeddings_clip).any().item())
         print("DEBUG image_embeddings_clip norm:", image_embeddings_clip.norm(dim=-1))
         print("DEBUG content_output has NaN:", torch.isnan(content_output).any().item())
@@ -779,6 +773,7 @@ class StableDiffusionXLControlNetInpaintPipeline(
                 return torch.sqrt(beta_prod_t) * grads, latents, best_style_sim, best_content_sim
             else:
                 return torch.sqrt(beta_prod_t) * loss, latents, best_style_sim, best_content_sim
+
 
 
     def rescale_guidance(self, guidance, noise_pred_text, noise_pred_uncond, guidance_scale):
