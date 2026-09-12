@@ -53,15 +53,16 @@ class RunConfig:
     perform_noise_correction: bool = True
 
     # Model paths
-    tile_controlnet_path: str = "./checkpoints/controlnet-tile-sdxl-1.0"
-    canny_controlnet_path: str = "./checkpoints/MistoLine"
+    # These defaults use the official Hugging Face repos and are downloaded on demand.
+    tile_controlnet_path: str = "xinsir/controlnet-tile-sdxl-1.0"
+    canny_controlnet_path: str = "TheMistoAI/MistoLine"
     depth_controlnet_path: str = "diffusers/controlnet-depth-sdxl-1.0-small"
 
-    canny_controlnet_path_sd15: str = "./checkpoints/control_sd15_canny.pth"
-    depth_controlnet_path_sd15: str = "./checkpoints/control_sd15_depth.pth"
+    canny_controlnet_path_sd15: str = "lllyasviel/control_v11p_sd15_canny"
+    depth_controlnet_path_sd15: str = "lllyasviel/control_v11f1p_sd15_depth"
 
-    IP_path: str = "./checkpoints/IP-Adapter"
-    clip_model_path: str = "./CSD_Score/models/ViT-L-14.pt"
+    IP_path: str = "h94/IP-Adapter"
+    clip_model_path: str = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
     clip_path: str = "./CSD_Score/models/checkpoint.pth"
 
     base_model_path_sd15: str = "runwayml/stable-diffusion-v1-5"
