@@ -697,22 +697,16 @@ class StableDiffusionXLControlNetInpaintPipeline(
         sample = sample / self.vae.config.scaling_factor
         sample = torch.clamp(sample, -10.0, 10.0)
 
-        # decode at lower latent resolution to reduce memory
-        sample_small = torch.nn.functional.interpolate(
-            sample,
-            scale_factor=0.5,  # 128x128 -> 64x64 -> 512x512 decode
-            mode="bilinear",
-            align_corners=False,
-        )
-
         tmp_dtype = torch.float16
         self.vae.to(dtype=tmp_dtype)
-        sample_small = sample_small.to(dtype=tmp_dtype)
+        sample = sample.to(dtype=tmp_dtype)
 
-        #print("DEBUG sample_small has NaN:", torch.isnan(sample_small).any().item())
-        #print("DEBUG sample_small min/max:", sample_small.min().item(), sample_small.max().item())
+        #print("DEBUG sample has NaN:", torch.isnan(sample).any().item())
+        #print("DEBUG sample min/max:", sample.min().item(), sample.max().item())
 
-        image = self.vae.decode(sample_small).sample
+        # VAE decode without tracking gradients to save memory
+        with torch.no_grad():
+            image = self.vae.decode(sample).sample
 
         #print("DEBUG image has NaN:", torch.isnan(image).any().item())
         #print("DEBUG image min/max:", image.min().item(), image.max().item())
@@ -776,6 +770,7 @@ class StableDiffusionXLControlNetInpaintPipeline(
                 return torch.sqrt(beta_prod_t) * grads, latents, best_style_sim, best_content_sim
             else:
                 return torch.sqrt(beta_prod_t) * loss, latents, best_style_sim, best_content_sim
+
 
 
 

@@ -70,7 +70,7 @@ class IPAdapterInstruct(IPAdapter):
                         state_dict["ip_adapter"][key.replace("ip_adapter.", "")] = f.get_tensor(key)
         else:
             state_dict = torch.load(self.ip_ckpt, map_location="cpu")
-        print(state_dict["image_proj"].keys(),state_dict["ip_adapter"].keys())
+        #print(state_dict["image_proj"].keys(),state_dict["ip_adapter"].keys())
         print(self.image_proj_model.load_state_dict(state_dict["image_proj"],strict=False))
         ip_layers = torch.nn.ModuleList(self.pipe.unet.attn_processors.values())
         print(ip_layers.load_state_dict(state_dict["ip_adapter"],strict=False))
