@@ -385,6 +385,9 @@ def build_bootstrap_style(args: argparse.Namespace, input_files: List[Path], sty
 
 
 def main() -> None:
+    torch.autograd.set_detect_anomaly(True)
+
+    
     args = parse_args()
 
     content_dir = args.content_dir
