@@ -728,6 +728,15 @@ class StableDiffusionXLControlNetInpaintPipeline(
 
         loss = 0.0#torch.tensor([0.0]).to(latents.device).to(dtype=latents.dtype).requires_grad_(True)
         if style_embeddings_clip is not None and index < 20:
+
+            print("image_embeddings_clip shape:", image_embeddings_clip.shape)
+            print("style_embeddings_clip shape:", style_embeddings_clip.shape)
+            print("image_embeddings_clip has NaN:", torch.isnan(image_embeddings_clip).any().item())
+            print("style_embeddings_clip has NaN:", torch.isnan(style_embeddings_clip).any().item())
+            print("image_embeddings_clip norm:", image_embeddings_clip.norm(dim=-1))
+            print("style_embeddings_clip norm:", style_embeddings_clip.norm(dim=-1))
+
+
             style_loss = (1 - torch.nn.CosineSimilarity(dim=-1)(image_embeddings_clip, style_embeddings_clip).mean())  * style_guidance_scale
             # style_loss += (torch.abs(torch.mean(image_embeddings_clip) - torch.mean(style_embeddings_clip)) + \
             #                torch.abs(torch.var(image_embeddings_clip, unbiased=False) - torch.var(style_embeddings_clip, unbiased=False))) * 20 * style_guidance_scale
