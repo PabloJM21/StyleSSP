@@ -669,105 +669,115 @@ class StableDiffusionXLControlNetInpaintPipeline(
         ip_instruct_model,
         CSD_model,
     ):
-        # latents = torch.rand([1,4,128,128], requires_grad=True, device=latents.device, dtype = latents.dtype) # torch.Size([1, 4, 128, 128])
-        latents = latents.detach().clone().requires_grad_(True) # torch.Size([1, 4, 128, 128])
-        latent_model_input = self.scheduler.scale_model_input(latents, timestep) # torch.Size([1, 4, 128, 128])
-        # predict the noise residual
+        latents = latents.detach().clone().requires_grad_(True)
+
+        # DEBUG: check latents
+        print("DEBUG latents has NaN:", torch.isnan(latents).any().item())
+        print("DEBUG latents min/max:", latents.min().item(), latents.max().item())
+
+        latent_model_input = self.scheduler.scale_model_input(latents, timestep)
+
         noise_pred = self.unet(
-                        latent_model_input,
-                        timestep,
-                        encoder_hidden_states=prompt_embeds,
-                        cross_attention_kwargs=self.cross_attention_kwargs,
-                        down_block_additional_residuals=down_block_res_samples,
-                        mid_block_additional_residual=mid_block_res_sample,
-                        added_cond_kwargs=added_cond_kwargs,
-                    ).sample
-        
+            latent_model_input,
+            timestep,
+            encoder_hidden_states=prompt_embeds,
+            cross_attention_kwargs=self.cross_attention_kwargs,
+            down_block_additional_residuals=down_block_res_samples,
+            mid_block_additional_residual=mid_block_res_sample,
+            added_cond_kwargs=added_cond_kwargs,
+        ).sample
+
         alpha_prod_t = self.scheduler.alphas_cumprod[timestep]
         beta_prod_t = 1 - alpha_prod_t
-        # compute predicted original sample from predicted noise also called
-        # "predicted x_0" of formula (12) from https://arxiv.org/pdf/2010.02502.pdf
-        pred_original_sample = (latents - beta_prod_t ** (0.5) * noise_pred) / alpha_prod_t ** (0.5)
-        
-        #sample = pred_original_sample
+
+        pred_original_sample = (latents - beta_prod_t ** 0.5 * noise_pred) / alpha_prod_t ** 0.5
+
         fac = torch.sqrt(beta_prod_t)
-        sample = pred_original_sample * (fac) + latents * (1 - fac)
-        
-        sample = 1 / self.vae.config.scaling_factor * sample
-        
-        # important to cast into fp32 to avoid nan
+        sample = pred_original_sample * fac + latents * (1 - fac)
+
+        sample = sample / self.vae.config.scaling_factor
+
         tmp_dtype = torch.float16
         self.vae.to(dtype=tmp_dtype)
         sample = sample.to(dtype=tmp_dtype)
+
+        # DEBUG: check sample before VAE
+        print("DEBUG sample has NaN:", torch.isnan(sample).any().item())
+        print("DEBUG sample min/max:", sample.min().item(), sample.max().item())
+
         image = self.vae.decode(sample).sample
-        #image = image.to(dtype=latents.dtype)
-            
-        image = (image / 2 + 0.5).clamp(0, 1) # torch.Size([2, 3, 1024, 1024]), [0, 1]
-        
-        # vis_image = image.detach().cpu().permute(0, 2, 3, 1).numpy() # (2, 1024, 1024, 3)
-        # vis_image = (vis_image * 255).round().astype("uint8")
-        # vis_image = PIL.Image.fromarray(vis_image[0])
-        # vis_image.save("image.jpg")
+
+        # DEBUG: check image after VAE
+        print("DEBUG image has NaN:", torch.isnan(image).any().item())
+        print("DEBUG image min/max:", image.min().item(), image.max().item())
+
+        image = (image / 2 + 0.5).clamp(0, 1)
+
+        # DEBUG: check image after clamp
+        print("DEBUG image after clamp has NaN:", torch.isnan(image).any().item())
 
         if ip_instruct_model is None:
-            set_requires_grad(CSD_model, False)  
-            _, content_output, image_embeddings_clip = CSD_model(self.normalize(transforms.Resize(224)(image[0:1]))) # 当前timeStep的图像
+            set_requires_grad(CSD_model, False)
+            clip_input = self.normalize(transforms.Resize(224)(image[0:1]))
+            # DEBUG: CSD clip input
+            print("DEBUG CSD clip_input has NaN:", torch.isnan(clip_input).any().item())
+            # run CSD in fp32 for stability
+            clip_input = clip_input.to(torch.float32)
+            CSD_model.to(torch.float32)
+            _, content_output, image_embeddings_clip = CSD_model(clip_input)
         else:
-            # image = image.requires_grad_(True)
-            image_tensor = (transforms.Resize(224)(image[0:1]))
-            # clip_image = self.clip_image_processor(images=image_tensor, return_tensors='pt',do_rescale=False).pixel_values
+            image_tensor = transforms.Resize(224)(image[0:1])
             clip_image = image_tensor.to(self.device, dtype=tmp_dtype)
-            '''
-            vis_image = image.detach().cpu().permute(0, 2, 3, 1).numpy() # (2, 1024, 1024, 3)
-            vis_image = (vis_image * 255).round().astype("uint8")
-            vis_image = PIL.Image.fromarray(vis_image[0])
-            clip_image = self.clip_image_processor(images=vis_image, return_tensors="pt").pixel_values
-            clip_image = clip_image.to(self.device, dtype=torch.float16)'''
-            image_embeddings_clip = ip_instruct_model.get_decouple_embeds(clip_image=clip_image, prompt="", query="use the style from the image")
-            content_output = ip_instruct_model.get_decouple_embeds(clip_image=clip_image, prompt="", query="use the composition from the image")
+            # DEBUG: IP clip_image
+            print("DEBUG IP clip_image has NaN:", torch.isnan(clip_image).any().item())
+            # run IP instruct in fp32 for stability
+            clip_image = clip_image.to(torch.float32)
+            ip_instruct_model.to(torch.float32)
+            image_embeddings_clip = ip_instruct_model.get_decouple_embeds(
+                clip_image=clip_image, prompt="", query="use the style from the image"
+            )
+            content_output = ip_instruct_model.get_decouple_embeds(
+                clip_image=clip_image, prompt="", query="use the composition from the image"
+            )
 
-        loss = 0.0#torch.tensor([0.0]).to(latents.device).to(dtype=latents.dtype).requires_grad_(True)
+        # DEBUG: embeddings
+        print("DEBUG image_embeddings_clip has NaN:", torch.isnan(image_embeddings_clip).any().item())
+        print("DEBUG image_embeddings_clip norm:", image_embeddings_clip.norm(dim=-1))
+        print("DEBUG content_output has NaN:", torch.isnan(content_output).any().item())
+        print("DEBUG content_output norm:", content_output.norm(dim=-1))
+
+        loss = 0.0
         if style_embeddings_clip is not None and index < 20:
-
             print("image_embeddings_clip shape:", image_embeddings_clip.shape)
             print("style_embeddings_clip shape:", style_embeddings_clip.shape)
-            print("image_embeddings_clip has NaN:", torch.isnan(image_embeddings_clip).any().item())
             print("style_embeddings_clip has NaN:", torch.isnan(style_embeddings_clip).any().item())
-            print("image_embeddings_clip norm:", image_embeddings_clip.norm(dim=-1))
             print("style_embeddings_clip norm:", style_embeddings_clip.norm(dim=-1))
 
-
-            style_loss = (1 - torch.nn.CosineSimilarity(dim=-1)(image_embeddings_clip, style_embeddings_clip).mean())  * style_guidance_scale
-            # style_loss += (torch.abs(torch.mean(image_embeddings_clip) - torch.mean(style_embeddings_clip)) + \
-            #                torch.abs(torch.var(image_embeddings_clip, unbiased=False) - torch.var(style_embeddings_clip, unbiased=False))) * 20 * style_guidance_scale
-            # loss = spherical_dist_loss(image_embeddings_clip, style_embeddings_clip).mean() * style_guidance_scale
+            style_loss = (1 - torch.nn.CosineSimilarity(dim=-1)(image_embeddings_clip, style_embeddings_clip).mean()) * style_guidance_scale
             loss += style_loss
+
         if content_embeddings_clip is not None and index >= 20:
-            content_loss = (1 - torch.nn.CosineSimilarity(dim=-1)(content_output, content_embeddings_clip).mean())  * content_guidance_scale
-            # content_loss = spherical_dist_loss(content_output, content_embeddings_clip).mean() * content_guidance_scale
+            content_loss = (1 - torch.nn.CosineSimilarity(dim=-1)(content_output, content_embeddings_clip).mean()) * content_guidance_scale
             loss += content_loss
-        
+
         if style_embeddings_clip is not None or content_embeddings_clip is not None:
             loss = loss.to(dtype=latents.dtype)
-            if loss.requires_grad:  # Check if loss requires grad  
-                grads = -torch.autograd.grad(loss, latents)[0]  
-            # grads = -torch.autograd.grad(loss, latents)[0] # latents)[0]
-            
-            sim = (image_embeddings_clip@style_embeddings_clip.mT).mean()
+            if loss.requires_grad:
+                grads = -torch.autograd.grad(loss, latents)[0]
+
+            sim = (image_embeddings_clip @ style_embeddings_clip.mT).mean()
             if sim > 0.20 and sim > best_style_sim:
                 best_style_sim = sim
-            
-            sim = (content_output@content_embeddings_clip.mT).mean()
+
+            sim = (content_output @ content_embeddings_clip.mT).mean()
             if sim > 0.20 and sim > best_content_sim:
                 best_content_sim = sim
 
             if loss.requires_grad:
                 return torch.sqrt(beta_prod_t) * grads, latents, best_style_sim, best_content_sim
-                noise_pred = noise_pred_original - torch.sqrt(beta_prod_t) * grads
             else:
                 return torch.sqrt(beta_prod_t) * loss, latents, best_style_sim, best_content_sim
-                noise_pred = noise_pred_original - torch.sqrt(beta_prod_t) * loss# - torch.sqrt(beta_prod_t) * grads
-        # return noise_pred, latents, best_style_sim, best_content_sim
+
 
     def rescale_guidance(self, guidance, noise_pred_text, noise_pred_uncond, guidance_scale):
         norm_cfg = torch.norm(guidance_scale * (noise_pred_text - noise_pred_uncond), p=2)
