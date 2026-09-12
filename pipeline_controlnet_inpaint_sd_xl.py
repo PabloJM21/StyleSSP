@@ -440,7 +440,7 @@ class StableDiffusionXLControlNetInpaintPipeline(
             prompt_embeds = torch.concat(prompt_embeds_list, dim=-1)
 
         # get unconditional embeddings for classifier free guidance
-        print(do_classifier_free_guidance)
+        #print(do_classifier_free_guidance)
         zero_out_negative_prompt = negative_prompt is None and self.config.force_zeros_for_empty_prompt
         if do_classifier_free_guidance and negative_prompt_embeds is None and zero_out_negative_prompt:
             negative_prompt_embeds = torch.zeros_like(prompt_embeds)
@@ -671,8 +671,8 @@ class StableDiffusionXLControlNetInpaintPipeline(
         latents = latents.detach().clone().requires_grad_(True)
 
         # DEBUG: check latents
-        print("DEBUG latents has NaN:", torch.isnan(latents).any().item())
-        print("DEBUG latents min/max:", latents.min().item(), latents.max().item())
+        #print("DEBUG latents has NaN:", torch.isnan(latents).any().item())
+        #print("DEBUG latents min/max:", latents.min().item(), latents.max().item())
 
         latent_model_input = self.scheduler.scale_model_input(latents, timestep)
 
@@ -709,29 +709,29 @@ class StableDiffusionXLControlNetInpaintPipeline(
         self.vae.to(dtype=tmp_dtype)
         sample_small = sample_small.to(dtype=tmp_dtype)
 
-        print("DEBUG sample_small has NaN:", torch.isnan(sample_small).any().item())
-        print("DEBUG sample_small min/max:", sample_small.min().item(), sample_small.max().item())
+        #print("DEBUG sample_small has NaN:", torch.isnan(sample_small).any().item())
+        #print("DEBUG sample_small min/max:", sample_small.min().item(), sample_small.max().item())
 
         image = self.vae.decode(sample_small).sample
 
-        print("DEBUG image has NaN:", torch.isnan(image).any().item())
-        print("DEBUG image min/max:", image.min().item(), image.max().item())
+        #print("DEBUG image has NaN:", torch.isnan(image).any().item())
+        #print("DEBUG image min/max:", image.min().item(), image.max().item())
 
         image = (image / 2 + 0.5).clamp(0, 1)
 
-        print("DEBUG image after clamp has NaN:", torch.isnan(image).any().item())
+        #print("DEBUG image after clamp has NaN:", torch.isnan(image).any().item())
 
         if ip_instruct_model is None:
             set_requires_grad(CSD_model, False)
             clip_input = self.normalize(transforms.Resize(224)(image[0:1]))
-            print("DEBUG CSD clip_input has NaN:", torch.isnan(clip_input).any().item())
+            #print("DEBUG CSD clip_input has NaN:", torch.isnan(clip_input).any().item())
             clip_input = clip_input.to(torch.float32)
             CSD_model.to(torch.float32)
             _, content_output, image_embeddings_clip = CSD_model(clip_input)
         else:
             image_tensor = transforms.Resize(224)(image[0:1])
             clip_image = image_tensor.to(self.device, dtype=tmp_dtype)
-            print("DEBUG IP clip_image has NaN:", torch.isnan(clip_image).any().item())
+            #print("DEBUG IP clip_image has NaN:", torch.isnan(clip_image).any().item())
             clip_image = clip_image.to(torch.float32)
             image_embeddings_clip = ip_instruct_model.get_decouple_embeds(
                 clip_image=clip_image, prompt="", query="use the style from the image"
@@ -740,10 +740,10 @@ class StableDiffusionXLControlNetInpaintPipeline(
                 clip_image=clip_image, prompt="", query="use the composition from the image"
             )
 
-        print("DEBUG image_embeddings_clip has NaN:", torch.isnan(image_embeddings_clip).any().item())
-        print("DEBUG image_embeddings_clip norm:", image_embeddings_clip.norm(dim=-1))
-        print("DEBUG content_output has NaN:", torch.isnan(content_output).any().item())
-        print("DEBUG content_output norm:", content_output.norm(dim=-1))
+        #print("DEBUG image_embeddings_clip has NaN:", torch.isnan(image_embeddings_clip).any().item())
+        #print("DEBUG image_embeddings_clip norm:", image_embeddings_clip.norm(dim=-1))
+        #print("DEBUG content_output has NaN:", torch.isnan(content_output).any().item())
+        #print("DEBUG content_output norm:", content_output.norm(dim=-1))
 
         loss = 0.0
         if style_embeddings_clip is not None and index < 20:
