@@ -341,9 +341,9 @@ def build_control_image(
 
 
 def make_run_config(args: argparse.Namespace, content_img: Path, style_img: Path, output_dir: Path) -> RunConfig:
-    import inspect
-    print("RunConfig loaded from:", inspect.getfile(RunConfig))
-    print("RunConfig fields:", list(RunConfig.__dataclass_fields__.keys()))
+    #import inspect
+    #print("RunConfig loaded from:", inspect.getfile(RunConfig))
+    #print("RunConfig fields:", list(RunConfig.__dataclass_fields__.keys()))
 
     cfg = RunConfig(
         model_type=Model_Type[args.model_type],
