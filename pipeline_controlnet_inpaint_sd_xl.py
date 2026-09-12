@@ -696,6 +696,8 @@ class StableDiffusionXLControlNetInpaintPipeline(
         sample = pred_original_sample * fac + latents * (1 - fac)
 
         sample = sample / self.vae.config.scaling_factor
+        # clamp before VAE decode
+        sample = torch.clamp(sample, -10.0, 10.0)
 
         tmp_dtype = torch.float32
         self.vae.to(dtype=tmp_dtype)
