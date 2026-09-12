@@ -124,7 +124,7 @@ def collect_content_images(content_dir: Path, image_format: str) -> List[Path]:
     return input_files
 
 
-def resolve_struct_seg_dict(content_img: Path) -> Path:
+def resolve_struct_seg_dict(content_img: Path) -> Optional[Path]:
     candidates = [
         content_img.with_suffix(".pth"),
         content_img.parent / "seg_dict" / f"{content_img.stem}.pth",
@@ -136,11 +136,7 @@ def resolve_struct_seg_dict(content_img: Path) -> Path:
         if candidate.is_file():
             return candidate
 
-    candidate_list = "\n".join(str(path) for path in candidates)
-    raise SystemExit(
-        "Unable to resolve struct segmentation dictionary for content image "
-        f"{content_img}. Tried:\n{candidate_list}"
-    )
+    return None
 
 
 def resolve_style_seg_dict(style_img: Path) -> Optional[Path]:
@@ -426,7 +422,8 @@ def main() -> None:
     bootstrap_cfg = make_run_config(args, bootstrap_content_img, bootstrap_style_img, output_dir)
     if bootstrap_style_seg is not None:
         bootstrap_cfg.app_seg_dict = str(bootstrap_style_seg)
-    bootstrap_cfg.struct_seg_dict = str(bootstrap_content_seg)
+    if bootstrap_content_seg is not None:
+        bootstrap_cfg.struct_seg_dict = str(bootstrap_content_seg)
 
     caption_processor, caption_model = load_captioning_models()
     depth_models = None
@@ -482,7 +479,8 @@ def main() -> None:
         print(f"[{index}/{len(input_files)}] {input_path.name} style={style_path.name} -> {output_path}")
 
         cfg = make_run_config(args, input_path, style_path, output_dir)
-        cfg.struct_seg_dict = str(struct_seg)
+        if struct_seg is not None:
+            cfg.struct_seg_dict = str(struct_seg)
         if style_seg is not None:
             cfg.app_seg_dict = str(style_seg)
 
