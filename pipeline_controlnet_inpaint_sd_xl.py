@@ -759,7 +759,9 @@ class StableDiffusionXLControlNetInpaintPipeline(
             loss += content_loss
 
         # Surrogate gradient (because VAE decode is no-grad)
-        grads = -loss * torch.ones_like(latents)
+        # scale the surrogate gradient by the scheduler’s noise level, not by a constant (like torch.ones_like(latents))
+        grads = -loss * noise_pred_original
+
 
         # DEBUG: gradient stats
         print(f"[DEBUG] step={index} | surrogate grad min={grads.min().item():.4f} "
