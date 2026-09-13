@@ -668,14 +668,15 @@ class StableDiffusionXLControlNetInpaintPipeline(
         ip_instruct_model,
         CSD_model,
     ):
+        # Clone latents for gradient
         latents = latents.detach().clone().requires_grad_(True)
 
-        # DEBUG: check latents
-        #print("DEBUG latents has NaN:", torch.isnan(latents).any().item())
-        #print("DEBUG latents min/max:", latents.min().item(), latents.max().item())
+        # DEBUG: latents
+        print(f"[DEBUG] step={index} | latents NaN={torch.isnan(latents).any().item()} "
+            f"| min={latents.min().item():.4f} max={latents.max().item():.4f}")
 
+        # UNet forward
         latent_model_input = self.scheduler.scale_model_input(latents, timestep)
-
         noise_pred = self.unet(
             latent_model_input,
             timestep,
@@ -689,44 +690,51 @@ class StableDiffusionXLControlNetInpaintPipeline(
         alpha_prod_t = self.scheduler.alphas_cumprod[timestep]
         beta_prod_t = 1 - alpha_prod_t
 
-        pred_original_sample = (latents - beta_prod_t ** 0.5 * noise_pred) / alpha_prod_t ** 0.5
-
+        pred_original_sample = (latents - beta_prod_t**0.5 * noise_pred) / alpha_prod_t**0.5
         fac = torch.sqrt(beta_prod_t)
         sample = pred_original_sample * fac + latents * (1 - fac)
 
+        # DEBUG: sample before clamp
+        print(f"[DEBUG] step={index} | sample pre-clamp min={sample.min().item():.4f} "
+            f"max={sample.max().item():.4f}")
+
+        # Clamp to avoid FP16 overflow
         sample = sample / self.vae.config.scaling_factor
         sample = torch.clamp(sample, -10.0, 10.0)
 
+        # DEBUG: sample after clamp
+        print(f"[DEBUG] step={index} | sample post-clamp min={sample.min().item():.4f} "
+            f"max={sample.max().item():.4f}")
+
+        # VAE decode in fp16, no-grad
         tmp_dtype = torch.float16
         self.vae.to(dtype=tmp_dtype)
         sample = sample.to(dtype=tmp_dtype)
 
-        #print("DEBUG sample has NaN:", torch.isnan(sample).any().item())
-        #print("DEBUG sample min/max:", sample.min().item(), sample.max().item())
-
-        # VAE decode without tracking gradients to save memory
         with torch.no_grad():
             image = self.vae.decode(sample).sample
 
-        #print("DEBUG image has NaN:", torch.isnan(image).any().item())
-        #print("DEBUG image min/max:", image.min().item(), image.max().item())
+        # DEBUG: VAE output
+        print(f"[DEBUG] step={index} | VAE image min={image.min().item():.4f} "
+            f"max={image.max().item():.4f} | NaN={torch.isnan(image).any().item()}")
 
+        # Normalize to [0,1]
         image = (image / 2 + 0.5).clamp(0, 1)
 
-        #print("DEBUG image after clamp has NaN:", torch.isnan(image).any().item())
+        # DEBUG: normalized image
+        print(f"[DEBUG] step={index} | image normalized min={image.min().item():.4f} "
+            f"max={image.max().item():.4f}")
 
+        # CLIP/IP processing
         if ip_instruct_model is None:
             set_requires_grad(CSD_model, False)
             clip_input = self.normalize(transforms.Resize(224)(image[0:1]))
-            #print("DEBUG CSD clip_input has NaN:", torch.isnan(clip_input).any().item())
             clip_input = clip_input.to(torch.float32)
             CSD_model.to(torch.float32)
             _, content_output, image_embeddings_clip = CSD_model(clip_input)
         else:
             image_tensor = transforms.Resize(224)(image[0:1])
-            clip_image = image_tensor.to(self.device, dtype=tmp_dtype)
-            #print("DEBUG IP clip_image has NaN:", torch.isnan(clip_image).any().item())
-            clip_image = clip_image.to(torch.float32)
+            clip_image = image_tensor.to(self.device, dtype=tmp_dtype).to(torch.float32)
             image_embeddings_clip = ip_instruct_model.get_decouple_embeds(
                 clip_image=clip_image, prompt="", query="use the style from the image"
             )
@@ -734,44 +742,47 @@ class StableDiffusionXLControlNetInpaintPipeline(
                 clip_image=clip_image, prompt="", query="use the composition from the image"
             )
 
-        #print("DEBUG image_embeddings_clip has NaN:", torch.isnan(image_embeddings_clip).any().item())
-        #print("DEBUG image_embeddings_clip norm:", image_embeddings_clip.norm(dim=-1))
-        #print("DEBUG content_output has NaN:", torch.isnan(content_output).any().item())
-        #print("DEBUG content_output norm:", content_output.norm(dim=-1))
+        # DEBUG: CLIP/IP embeddings
+        print(f"[DEBUG] step={index} | CLIP style norm={image_embeddings_clip.norm(dim=-1)}")
+        print(f"[DEBUG] step={index} | CLIP content norm={content_output.norm(dim=-1)}")
 
+        # Compute loss
         loss = 0.0
         if style_embeddings_clip is not None and index < 20:
-            print("image_embeddings_clip shape:", image_embeddings_clip.shape)
-            print("style_embeddings_clip shape:", style_embeddings_clip.shape)
-            print("style_embeddings_clip has NaN:", torch.isnan(style_embeddings_clip).any().item())
-            print("style_embeddings_clip norm:", style_embeddings_clip.norm(dim=-1))
-
-            style_loss = (1 - torch.nn.CosineSimilarity(dim=-1)(image_embeddings_clip, style_embeddings_clip).mean()) * style_guidance_scale
+            style_loss = (1 - torch.nn.CosineSimilarity(dim=-1)(
+                image_embeddings_clip, style_embeddings_clip).mean()) * style_guidance_scale
             loss += style_loss
 
         if content_embeddings_clip is not None and index >= 20:
-            content_loss = (1 - torch.nn.CosineSimilarity(dim=-1)(content_output, content_embeddings_clip).mean()) * content_guidance_scale
+            content_loss = (1 - torch.nn.CosineSimilarity(dim=-1)(
+                content_output, content_embeddings_clip).mean()) * content_guidance_scale
             loss += content_loss
 
-        if style_embeddings_clip is not None or content_embeddings_clip is not None:
-            loss = loss.to(dtype=latents.dtype)
-            
-            # surrogate gradient because VAE/CLIP decode is no-grad
-            grads = -loss * torch.ones_like(latents)
+        # Surrogate gradient (because VAE decode is no-grad)
+        grads = -loss * torch.ones_like(latents)
 
+        # DEBUG: gradient stats
+        print(f"[DEBUG] step={index} | surrogate grad min={grads.min().item():.4f} "
+            f"max={grads.max().item():.4f} | loss={loss.item():.6f}")
 
-            sim = (image_embeddings_clip @ style_embeddings_clip.mT).mean()
-            if sim > 0.20 and sim > best_style_sim:
-                best_style_sim = sim
+        # Track best sims
+        sim_style = (image_embeddings_clip @ style_embeddings_clip.mT).mean()
+        sim_content = (content_output @ content_embeddings_clip.mT).mean()
 
-            sim = (content_output @ content_embeddings_clip.mT).mean()
-            if sim > 0.20 and sim > best_content_sim:
-                best_content_sim = sim
+        if sim_style > 0.20 and sim_style > best_style_sim:
+            best_style_sim = sim_style
 
-            if loss.requires_grad:
-                return torch.sqrt(beta_prod_t) * grads, latents, best_style_sim, best_content_sim
-            else:
-                return torch.sqrt(beta_prod_t) * loss, latents, best_style_sim, best_content_sim
+        if sim_content > 0.20 and sim_content > best_content_sim:
+            best_content_sim = sim_content
+
+        # DEBUG: sims
+        print(f"[DEBUG] step={index} | sim_style={sim_style.item():.6f} "
+            f"best_style_sim={best_style_sim.item():.6f}")
+        print(f"[DEBUG] step={index} | sim_content={sim_content.item():.6f} "
+            f"best_content_sim={best_content_sim.item():.6f}")
+
+        return torch.sqrt(beta_prod_t) * grads, latents, best_style_sim, best_content_sim
+
 
 
 
