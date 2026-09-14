@@ -477,6 +477,8 @@ def main() -> None:
 
     for index, input_path in enumerate(input_files, start=1):
         output_path = output_dir / input_path.name
+        invert_path = output_dir / f"{input_path.stem}_inversion.png"
+
         struct_seg = resolve_struct_seg_dict(input_path)
 
         if style_refs is not None:
@@ -546,6 +548,20 @@ def main() -> None:
             enable_guidance=False,
             used_NPI_guidance=True,
         )
+
+        print("[INV] latent dtype:", inv_latent.dtype)
+        print("[INV] latent shape:", inv_latent.shape)
+        print("[INV] latent min/max:", inv_latent.min().item(), inv_latent.max().item())
+        print("[INV] latent NaN:", torch.isnan(inv_latent).any().item())
+        print("[INV] latent mean/std:", inv_latent.mean().item(), inv_latent.std().item())
+
+        with torch.no_grad():
+            img = pipe_inference.vae.decode(inv_latent / pipe_inference.vae.config.scaling_factor).sample
+            img = (img / 2 + 0.5).clamp(0, 1)
+            img.save(invert_path)
+
+
+
 
         _, latent_l, _ = style_impl.freq_exp(inv_latent, d_s=0.3, d_t=0.9, alpha=0.7, filter_type="gaussian_b")
         latent_l = latent_l.to(inv_latent.dtype)
