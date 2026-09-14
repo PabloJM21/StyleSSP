@@ -387,7 +387,6 @@ def build_bootstrap_style(args: argparse.Namespace, input_files: List[Path], sty
 def main() -> None:
     torch.autograd.set_detect_anomaly(True)
 
-
     args = parse_args()
 
     content_dir = args.content_dir
@@ -449,7 +448,10 @@ def main() -> None:
         "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
         torch_dtype=bootstrap_cfg.dtype,
     ).to(bootstrap_cfg.device)
-    vae = AutoencoderKL.from_pretrained("madebyollin/sdxl-vae-fp16-fix", torch_dtype=bootstrap_cfg.dtype).to(bootstrap_cfg.device)
+    vae = AutoencoderKL.from_pretrained(
+        "madebyollin/sdxl-vae-fp16-fix",
+        torch_dtype=bootstrap_cfg.dtype,
+    ).to(bootstrap_cfg.device)
     controlnet, controlnet_conditioning_scale = build_controlnet_bundle(bootstrap_cfg, bootstrap_cfg.device)
 
     pipe_inference = StableDiffusionXLControlNetInpaintPipeline.from_pretrained(
@@ -514,6 +516,7 @@ def main() -> None:
             )
         else:
             content_image_prompt = cfg.content_image_prompt
+
         content_embeddings_instruct = ip_instruct_model.get_decouple_embeds(
             pil_image=content_image,
             prompt="",
@@ -573,13 +576,17 @@ def main() -> None:
             ip_instruct_model=ip_instruct_model,
             CSD_model=None,
             inv_guidance=cfg.inv_guidance,
-            feature_extractor=ip_instruct_model,
-            do_NPI=False,
+            style_embedding=style_embeddings_instruct,
+            content_embedding=content_embeddings_instruct,
+            neg_style_embedding=content_style_instruct,
+            neg_content_embedding=style_content_embeddings,
+            do_NPT=True,
         ).images[0]
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output.save(output_path)
         torch.cuda.empty_cache()
+
 
 
 if __name__ == "__main__":
