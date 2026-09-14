@@ -564,30 +564,36 @@ def main() -> None:
             image=content_image,
             control_image=control_image,
 
-            # 🔥 Disable IP-Adapter guidance
-            ip_adapter_image=None,
+            # 🔥 KEEP IP‑Adapter active (required by UNet)
+            ip_adapter_image=style_image,
 
             generator=torch.Generator(device="cpu").manual_seed(cfg.seed),
             latents=latent_l,
             guidance_scale=cfg.guidance_scale,
             controlnet_conditioning_scale=controlnet_conditioning_scale,
+
+            # 🔥 Disable NPI interpolation
             npi_interp=0.0,
 
-            # 🔥 Disable ALL cond_fn guidance
-            style_embeddings_instruct=None,
-            content_embeddings_instruct=None,
+            # 🔥 Disable cond_fn guidance (but keep embeddings to satisfy UNet)
+            style_embeddings_instruct=style_embeddings_instruct,
+            content_embeddings_instruct=content_embeddings_instruct,
             style_guidance_scale=0.0,
             content_guidance_scale=0.0,
-            ip_instruct_model=None,
+
+            # 🔥 Keep IP‑Adapter model active (required)
+            ip_instruct_model=ip_instruct_model,
+
+            # 🔥 Disable CSD and inversion guidance
             CSD_model=None,
             inv_guidance=0.0,
             do_NPT=False,
 
-            # 🔥 Disable negative guidance too
-            style_embedding=None,
-            content_embedding=None,
-            neg_style_embedding=None,
-            neg_content_embedding=None,
+            # 🔥 Keep negative embeddings (required by pipeline)
+            style_embedding=style_embeddings_instruct,
+            content_embedding=content_embeddings_instruct,
+            neg_style_embedding=content_style_instruct,
+            neg_content_embedding=style_content_embeddings,
         ).images[0]
 
 
