@@ -174,6 +174,9 @@ def inversion_step(
 
             noise_pred = unet_pass(pipe, approximated_z_tp1, t, prompt_embeds_in, added_cond_kwargs_in)
 
+            print("[INV] noise_pred min/max:", noise_pred.min().item(), noise_pred.max().item())
+
+
             # noise regularization: split batch on first step
             if pipe.cfg.noise_regularization_num_reg_steps > 0 and i == 0:
                 noise_pred_optimal, noise_pred = noise_pred.chunk(2)

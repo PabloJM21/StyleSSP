@@ -444,6 +444,20 @@ def main() -> None:
         model_name=bootstrap_cfg.base_model_path,
     )
 
+    print("[INV] scheduler:", pipe_inversion.scheduler.__class__.__name__)
+    print("[INV] timesteps:", pipe_inversion.scheduler.timesteps[:10])
+    print("[INF] scheduler:", pipe_inference.scheduler.__class__.__name__)
+    print("[INF] timesteps:", pipe_inference.scheduler.timesteps[:10])
+
+    print("[INV] VAE scaling:", pipe_inversion.vae.config.scaling_factor)
+    print("[INF] VAE scaling:", pipe_inference.vae.config.scaling_factor)
+
+    print("[INV] UNet dtype:", pipe_inversion.unet.dtype)
+    print("[INF] UNet dtype:", pipe_inference.unet.dtype)
+
+
+
+
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
         "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
         torch_dtype=bootstrap_cfg.dtype,
