@@ -118,7 +118,6 @@ def latents_kl_divergence(x0, x1):
     )
     kl = torch.abs(kl).sum(dim=-1)
     return kl
-
 def inversion_step(
     pipe,
     z_t: torch.tensor,
@@ -176,7 +175,6 @@ def inversion_step(
 
             print("[INV] noise_pred min/max:", noise_pred.min().item(), noise_pred.max().item())
 
-
             # noise regularization: split batch on first step
             if pipe.cfg.noise_regularization_num_reg_steps > 0 and i == 0:
                 noise_pred_optimal, noise_pred = noise_pred.chunk(2)
@@ -216,12 +214,17 @@ def inversion_step(
             if not has_nan:
                 noise_pred = noise_pred_
 
-        # 🔥 PURE SCHEDULER INVERSION — NO GUIDANCE UPDATE
-        approximated_z_tp1 = pipe.scheduler.inv_step(
-            noise_pred, t, z_t, **extra_step_kwargs, return_dict=False
-        )[0].detach()
+        # 🔥 DDIM-style scheduler step — pure inversion, no extra guidance
+        step_out = pipe.scheduler.step(
+            noise_pred,
+            t,
+            approximated_z_tp1,
+            **extra_step_kwargs,
+            return_dict=False,
+        )
+        approximated_z_tp1 = step_out[0].detach()
 
-        # 🔥 guidance block is intentionally disabled for debugging
+        # 🔥 guidance block adapted to DDIM, but intentionally disabled for now
         # if enable_guidance:
         #     guidance = get_guidace(
         #         pipe_inf=pipe_inf,
@@ -236,9 +239,16 @@ def inversion_step(
         #     )
         #     scale = rescale_guidance(guidance, noise_pred_text, noise_pred_uncond, pipe.guidance_scale)
         #     guidance = guidance * scale
-        #     approximated_z_tp1 = pipe.scheduler.inv_step(
-        #         noise_pred - guidance, t, z_t, **extra_step_kwargs, return_dict=False
-        #     )[0].detach()
+        #
+        #     guided_noise = noise_pred - guidance
+        #     step_out = pipe.scheduler.step(
+        #         guided_noise,
+        #         t,
+        #         approximated_z_tp1,
+        #         **extra_step_kwargs,
+        #         return_dict=False,
+        #     )
+        #     approximated_z_tp1 = step_out[0].detach()
 
     # average latents if enabled
     if pipe.cfg.average_latent_estimations and nosie_pred_avg is not None:
@@ -251,26 +261,29 @@ def inversion_step(
             num_ac_rolls=pipe.cfg.noise_regularization_num_ac_rolls,
             generator=generator,
         )
-        approximated_z_tp1 = pipe.scheduler.inv_step(
-            nosie_pred_avg, t, z_t, **extra_step_kwargs, return_dict=False
-        )[0].detach()
-
-    # optional noise correction (unchanged)
-    if pipe.cfg.perform_noise_correction:  # False in your current config
-        noise_pred = unet_pass(pipe, approximated_z_tp1, t, prompt_embeds, added_cond_kwargs)
-
-        if pipe.do_classifier_free_guidance:
-            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + pipe.guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-        pipe.scheduler.step_and_update_noise(
-            noise_pred,
+        step_out = pipe.scheduler.step(
+            nosie_pred_avg,
             t,
-            approximated_z_tp1,
             z_t,
+            **extra_step_kwargs,
             return_dict=False,
-            optimize_epsilon_type=pipe.cfg.perform_noise_correction,
         )
+        approximated_z_tp1 = step_out[0].detach()
+
+    # 🔥 noise correction removed for DDIM (no step_and_update_noise)
+    # if pipe.cfg.perform_noise_correction:
+    #     noise_pred = unet_pass(pipe, approximated_z_tp1, t, prompt_embeds, added_cond_kwargs)
+    #     if pipe.do_classifier_free_guidance:
+    #         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+    #         noise_pred = noise_pred_uncond + pipe.guidance_scale * (noise_pred_text - noise_pred_uncond)
+    #     step_out = pipe.scheduler.step(
+    #         noise_pred,
+    #         t,
+    #         approximated_z_tp1,
+    #         **extra_step_kwargs,
+    #         return_dict=False,
+    #     )
+    #     approximated_z_tp1 = step_out[0].detach()
 
     return approximated_z_tp1
 
