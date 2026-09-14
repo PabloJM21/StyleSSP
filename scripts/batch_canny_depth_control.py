@@ -568,7 +568,7 @@ def main() -> None:
             ip_adapter_image=style_image,
 
             generator=torch.Generator(device="cpu").manual_seed(cfg.seed),
-            latents=latent_l,
+            latents=None,
             guidance_scale=cfg.guidance_scale,
             controlnet_conditioning_scale=controlnet_conditioning_scale,
 
