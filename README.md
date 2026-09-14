@@ -73,30 +73,23 @@ Model and runtime flags:
 * `--control_type` (`tile`, `canny`, `depth`, `combine`, `tile_canny`)
 * `--resolution`, `--seed`, `--num_inference_steps`, `--num_inversion_steps`, `--num_renoise_steps`, `--max_num_renoise_steps_first_step`
 
-## Why StyleSSP defaults to Euler
+## Why inversion uses DDIM while inference uses UniPC
 
-StyleSSP uses a *renoise inversion* procedure.
-This procedure requires:
+StyleSSP performs a *renoise inversion* step before denoising. That inversion process is not a forward diffusion sampler; it is a latent reconstruction step.
 
-- `step_and_update_noise`
-- `inv_step`
-- custom noise tracking (`noise_list`)
-- sigma-based ancestral updates
-- friendly inversion support
+For SDXL inversion, the scheduler must be stable under reverse-time latent reconstruction. Euler Ancestral is a forward diffusion sampler: its update rule adds noise at each step and is designed for generation, not inversion. In practice, using `MyEulerAncestralDiscreteScheduler` for inversion causes the latent trajectory to explode and destabilize the renoise procedure.
 
-These features exist only in the Euler scheduler.
+The correct split is therefore:
 
-Your DDIM scheduler is a *standard DDIM with a custom `inv_step`*, but it lacks:
+- Inversion: `MyDDIMScheduler` for stable latent reconstruction and renoise compatibility.
+- Inference: `UniPCMultistepScheduler` for denoising, which is already the correct sampler for the final generation pass.
 
-- noise correction
-- sigma_up / sigma_down ancestral logic
-- noise optimization
-- `step_and_update_noise`
-- friendly inversion hooks
+This matches the project design:
 
-Therefore:
+- `pipe_inversion.scheduler = MyDDIMScheduler.from_config(...)`
+- `pipe_inference.scheduler = UniPCMultistepScheduler.from_config(...)`
 
-# ✔ The correct scheduler for StyleSSP is `MyEulerAncestralDiscreteScheduler`.
+This separation is important because the inversion path must preserve a stable latent trajectory, while the inference path is allowed to use a modern denoising sampler optimized for final generation.
 
 Complete example with all relevant flags:
 
@@ -107,7 +100,7 @@ python scripts/batch_canny_depth_control.py \
   --output_dir results \
   --style_image data/style/7.jpg \
   --model_type SDXL \
-  --scheduler_type EULER \
+  --scheduler_type DDIM \
   --choose_pipeline "" \
   --control_type tile_canny \
   --resolution 1024 \

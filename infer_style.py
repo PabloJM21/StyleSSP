@@ -204,7 +204,7 @@ if __name__ == "__main__":
         os.makedirs("results")
 
     model_type = Model_Type.SDXL
-    scheduler_type = Scheduler_Type.EULER
+    scheduler_type = Scheduler_Type.DDIM
     config = RunConfig(model_type = model_type,
                         num_inference_steps = 50,
                         num_inversion_steps = 50,

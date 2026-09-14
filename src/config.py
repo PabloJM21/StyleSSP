@@ -9,7 +9,7 @@ from src.eunms import Model_Type, Scheduler_Type
 @dataclass
 class RunConfig:
     model_type: Model_Type = Model_Type.SDXL_Turbo
-    scheduler_type: Scheduler_Type = Scheduler_Type.EULER
+    scheduler_type: Scheduler_Type = Scheduler_Type.DDIM
 
     seed: int = 7865
     num_inference_steps: int = 4

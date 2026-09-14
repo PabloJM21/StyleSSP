@@ -62,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument("--model_type", type=str, default="SDXL", choices=MODEL_TYPE_CHOICES)
-    parser.add_argument("--scheduler_type", type=str, default="EULER", choices=SCHEDULER_TYPE_CHOICES)
+    parser.add_argument("--scheduler_type", type=str, default="DDIM", choices=SCHEDULER_TYPE_CHOICES)
     parser.add_argument("--choose_pipeline", type=str, default="", choices=["", "sd15"])
     parser.add_argument("--control_type", type=str, default="tile_canny", choices=CONTROL_TYPE_CHOICES)
     parser.add_argument("--resolution", type=int, default=1024)
@@ -426,6 +426,7 @@ def main() -> None:
     bootstrap_content_seg = resolve_struct_seg_dict(bootstrap_content_img)
 
     bootstrap_cfg = make_run_config(args, bootstrap_content_img, bootstrap_style_img, output_dir)
+    bootstrap_cfg.scheduler_type = Scheduler_Type.DDIM
     if bootstrap_style_seg is not None:
         bootstrap_cfg.app_seg_dict = str(bootstrap_style_seg)
     if bootstrap_content_seg is not None:
@@ -484,6 +485,12 @@ def main() -> None:
         pipe_inference.scheduler.config
     )
     pipe_inference.unet.enable_gradient_checkpointing()
+
+    # Inversion must remain DDIM for stable renoise inversion.
+    # Inference uses UniPC for denoising; Euler ancestral is not valid for SDXL inversion.
+    pipe_inversion.scheduler = __import__("src.schedulers.ddim_scheduler", fromlist=["MyDDIMScheduler"]).MyDDIMScheduler.from_config(
+        pipe_inversion.scheduler.config
+    )
 
     pipe_inference.load_ip_adapter(
         bootstrap_cfg.IP_path,
