@@ -477,7 +477,6 @@ def main() -> None:
 
     for index, input_path in enumerate(input_files, start=1):
         output_path = output_dir / input_path.name
-        invert_path = output_dir / f"{input_path.stem}_inversion.png"
 
         struct_seg = resolve_struct_seg_dict(input_path)
 
@@ -558,7 +557,12 @@ def main() -> None:
         with torch.no_grad():
             img = pipe_inference.vae.decode(inv_latent / pipe_inference.vae.config.scaling_factor).sample
             img = (img / 2 + 0.5).clamp(0, 1)
-            img.save(invert_path)
+            img_np = img.detach().cpu().clamp(0, 1)[0]        # remove batch dim
+            img_np = (img_np * 255).permute(1, 2, 0).numpy()  # CHW → HWC
+
+            invert_path = output_dir / f"{input_path.stem}_inversion.png"
+
+            Image.fromarray(img_np.astype("uint8")).save(invert_path)
 
 
 
