@@ -444,29 +444,31 @@ def main() -> None:
         model_name=bootstrap_cfg.base_model_path,
     )
 
+    # ---------------------------------------------------------
+    # 🔥 Debug inversion scheduler / VAE / UNet BEFORE inference pipe is created
+    # ---------------------------------------------------------
     print("[INV] scheduler:", pipe_inversion.scheduler.__class__.__name__)
     print("[INV] timesteps:", pipe_inversion.scheduler.timesteps[:10])
-    print("[INF] scheduler:", pipe_inference.scheduler.__class__.__name__)
-    print("[INF] timesteps:", pipe_inference.scheduler.timesteps[:10])
 
     print("[INV] VAE scaling:", pipe_inversion.vae.config.scaling_factor)
-    print("[INF] VAE scaling:", pipe_inference.vae.config.scaling_factor)
-
     print("[INV] UNet dtype:", pipe_inversion.unet.dtype)
-    print("[INF] UNet dtype:", pipe_inference.unet.dtype)
 
-
-
-
+    # ---------------------------------------------------------
+    # 🔥 Now build the inference pipe
+    # ---------------------------------------------------------
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
         "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
         torch_dtype=bootstrap_cfg.dtype,
     ).to(bootstrap_cfg.device)
+
     vae = AutoencoderKL.from_pretrained(
         "madebyollin/sdxl-vae-fp16-fix",
         torch_dtype=bootstrap_cfg.dtype,
     ).to(bootstrap_cfg.device)
-    controlnet, controlnet_conditioning_scale = build_controlnet_bundle(bootstrap_cfg, bootstrap_cfg.device)
+
+    controlnet, controlnet_conditioning_scale = build_controlnet_bundle(
+        bootstrap_cfg, bootstrap_cfg.device
+    )
 
     pipe_inference = StableDiffusionXLControlNetInpaintPipeline.from_pretrained(
         bootstrap_cfg.base_model_path,
@@ -477,8 +479,12 @@ def main() -> None:
         use_safetensors=True,
         variant="fp16",
     ).to(bootstrap_cfg.device)
-    pipe_inference.scheduler = UniPCMultistepScheduler.from_config(pipe_inference.scheduler.config)
+
+    pipe_inference.scheduler = UniPCMultistepScheduler.from_config(
+        pipe_inference.scheduler.config
+    )
     pipe_inference.unet.enable_gradient_checkpointing()
+
     pipe_inference.load_ip_adapter(
         bootstrap_cfg.IP_path,
         subfolder="sdxl_models",
@@ -486,6 +492,16 @@ def main() -> None:
         image_encoder_folder=None,
     )
     pipe_inference.set_ip_adapter_scale({"up": {"block_0": [0.0, 2.5, 0.0]}})
+
+    # ---------------------------------------------------------
+    # 🔥 Debug inference scheduler / VAE / UNet AFTER inference pipe is created
+    # ---------------------------------------------------------
+    print("[INF] scheduler:", pipe_inference.scheduler.__class__.__name__)
+    print("[INF] timesteps:", pipe_inference.scheduler.timesteps[:10])
+
+    print("[INF] VAE scaling:", pipe_inference.vae.config.scaling_factor)
+    print("[INF] UNet dtype:", pipe_inference.unet.dtype)
+
 
     rng = random.Random(args.seed)
 
