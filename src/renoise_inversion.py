@@ -140,7 +140,11 @@ def inversion_step(
 ) -> torch.tensor:
     extra_step_kwargs = {}
     avg_range = pipe.cfg.average_first_step_range if t.item() < first_step_max_timestep else pipe.cfg.average_step_range
-    num_renoise_steps = min(pipe.cfg.max_num_renoise_steps_first_step, num_renoise_steps) if t.item() < first_step_max_timestep else num_renoise_steps
+    num_renoise_steps = (
+        min(pipe.cfg.max_num_renoise_steps_first_step, num_renoise_steps)
+        if t.item() < first_step_max_timestep
+        else num_renoise_steps
+    )
 
     nosie_pred_avg = None
     noise_pred_optimal = None
@@ -149,40 +153,45 @@ def inversion_step(
     approximated_z_tp1 = z_t.clone()
     for i in range(num_renoise_steps + 1):
         with torch.no_grad():
-            # if noise regularization is enabled, we need to double the batch size for the first step
+            # noise regularization: double batch on first step
             if pipe.cfg.noise_regularization_num_reg_steps > 0 and i == 0:
                 approximated_z_tp1 = torch.cat([z_tp1_forward, approximated_z_tp1])
                 prompt_embeds_in = torch.cat([prompt_embeds, prompt_embeds])
                 if added_cond_kwargs is not None:
-                    added_cond_kwargs_in = {}
-                    added_cond_kwargs_in['text_embeds'] = torch.cat([added_cond_kwargs['text_embeds'], added_cond_kwargs['text_embeds']])
-                    added_cond_kwargs_in['time_ids'] = torch.cat([added_cond_kwargs['time_ids'], added_cond_kwargs['time_ids']])
+                    added_cond_kwargs_in = {
+                        "text_embeds": torch.cat(
+                            [added_cond_kwargs["text_embeds"], added_cond_kwargs["text_embeds"]]
+                        ),
+                        "time_ids": torch.cat(
+                            [added_cond_kwargs["time_ids"], added_cond_kwargs["time_ids"]]
+                        ),
+                    }
                 else:
                     added_cond_kwargs_in = None
             else:
                 prompt_embeds_in = prompt_embeds
                 added_cond_kwargs_in = added_cond_kwargs
+
             noise_pred = unet_pass(pipe, approximated_z_tp1, t, prompt_embeds_in, added_cond_kwargs_in)
-            # 往白化上guidance
-            # noise_pred = Fourier_filter(noise_pred, threshold=30, scale=0.5)
-            # if noise regularization is enabled, we need to split the batch size for the first step
+
+            # noise regularization: split batch on first step
             if pipe.cfg.noise_regularization_num_reg_steps > 0 and i == 0:
                 noise_pred_optimal, noise_pred = noise_pred.chunk(2)
                 if pipe.do_classifier_free_guidance:
                     noise_pred_optimal_uncond, noise_pred_optimal_text = noise_pred_optimal.chunk(2)
-                    noise_pred_optimal = noise_pred_optimal_uncond + pipe.guidance_scale * (noise_pred_optimal_text - noise_pred_optimal_uncond)
+                    noise_pred_optimal = (
+                        noise_pred_optimal_uncond
+                        + pipe.guidance_scale * (noise_pred_optimal_text - noise_pred_optimal_uncond)
+                    )
                 noise_pred_optimal = noise_pred_optimal.detach()
-            # perform guidance
-            if pipe.do_classifier_free_guidance:
-                if used_NPI_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + pipe.guidance_scale * (noise_pred_text - noise_pred_uncond)
-                else:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + pipe.guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-            # Calculate average noise
-            if  i >= avg_range[0] and i < avg_range[1]:
+            # classifier-free guidance (standard)
+            if pipe.do_classifier_free_guidance:
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + pipe.guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+            # average noise over renoise steps
+            if i >= avg_range[0] and i < avg_range[1]:
                 j = i - avg_range[0]
                 if nosie_pred_avg is None:
                     nosie_pred_avg = noise_pred.clone()
@@ -190,64 +199,78 @@ def inversion_step(
                     nosie_pred_avg = j * nosie_pred_avg / (j + 1) + noise_pred / (j + 1)
 
         if i >= avg_range[0] or (not pipe.cfg.average_latent_estimations and i > 0):
-            noise_pred_ = noise_regularization(noise_pred, noise_pred_optimal, lambda_kl=pipe.cfg.noise_regularization_lambda_kl, lambda_ac=pipe.cfg.noise_regularization_lambda_ac, num_reg_steps=pipe.cfg.noise_regularization_num_reg_steps, num_ac_rolls=pipe.cfg.noise_regularization_num_ac_rolls, generator=generator)
-            
+            noise_pred_ = noise_regularization(
+                noise_pred,
+                noise_pred_optimal,
+                lambda_kl=pipe.cfg.noise_regularization_lambda_kl,
+                lambda_ac=pipe.cfg.noise_regularization_lambda_ac,
+                num_reg_steps=pipe.cfg.noise_regularization_num_reg_steps,
+                num_ac_rolls=pipe.cfg.noise_regularization_num_ac_rolls,
+                generator=generator,
+            )
+
             has_nan = torch.isnan(noise_pred_).any().item()
             if not has_nan:
                 noise_pred = noise_pred_
-        
-        approximated_z_tp1 = pipe.scheduler.inv_step(noise_pred, t, z_t, **extra_step_kwargs, return_dict=False)[0].detach()
 
-        if enable_guidance: # False
-            guidance = get_guidace(pipe_inf=pipe_inf, 
-                                    latents=approximated_z_tp1, 
-                                    prompt=prompt, 
-                                    feature_extractor=feature_extractor,
-                                    style_embedding=style_embedding,
-                                    content_embedding=content_embedding,
-                                    neg_style_embedding=neg_style_embedding,
-                                    neg_content_embedding=neg_content_embedding,
-                                    get_grad_guidance=pipe.cfg.get_grad_guidance)
-            scale = rescale_guidance(guidance, noise_pred_text, noise_pred_uncond, pipe.guidance_scale)
-            guidance = guidance * scale
-            approximated_z_tp1 = pipe.scheduler.inv_step(noise_pred - guidance, t, z_t, **extra_step_kwargs, return_dict=False)[0].detach()
-        # if i < num_renoise_steps // 2:
-        #     approximated_z_tp1 = Fourier_filter(approximated_z_tp1, threshold=1, scale=0.8)
-    
-        '''
-        # img = from_latents2img(pipe_inf, approximated_z_tp1)
-        '''
-        '''
-        这个z_tp1就是latents
-        import pdb;pdb.set_trace()
-        pipe_inf.vae.to(dtype=torch.float32)
-        latents = approximated_z_tp1.to(dtype=torch.float32)
-        latents = latents / pipe_inf.vae.config.scaling_factor
-        image = pipe_inf.vae.decode(latents, return_dict=False)[0]
-        # image = pipe.vae.decode(prev_sample).sample       
-        image = (image / 2 + 0.5).clamp(0, 1)
-        vis_image = image.detach().cpu().permute(0, 2, 3, 1).numpy() # (2, 1024, 1024, 3)
-        vis_image = (vis_image * 255).round().astype("uint8")
-        vis_image = PIL.Image.fromarray(vis_image[0])
-        vis_image.save(f"image_{i}.jpg")'''
+        # 🔥 PURE SCHEDULER INVERSION — NO GUIDANCE UPDATE
+        approximated_z_tp1 = pipe.scheduler.inv_step(
+            noise_pred, t, z_t, **extra_step_kwargs, return_dict=False
+        )[0].detach()
 
-    # if average latents is enabled, we need to perform an additional step with the average noise
+        # 🔥 guidance block is intentionally disabled for debugging
+        # if enable_guidance:
+        #     guidance = get_guidace(
+        #         pipe_inf=pipe_inf,
+        #         latents=approximated_z_tp1,
+        #         prompt=prompt,
+        #         feature_extractor=feature_extractor,
+        #         style_embedding=style_embedding,
+        #         content_embedding=content_embedding,
+        #         neg_style_embedding=neg_style_embedding,
+        #         neg_content_embedding=neg_content_embedding,
+        #         get_grad_guidance=pipe.cfg.get_grad_guidance,
+        #     )
+        #     scale = rescale_guidance(guidance, noise_pred_text, noise_pred_uncond, pipe.guidance_scale)
+        #     guidance = guidance * scale
+        #     approximated_z_tp1 = pipe.scheduler.inv_step(
+        #         noise_pred - guidance, t, z_t, **extra_step_kwargs, return_dict=False
+        #     )[0].detach()
+
+    # average latents if enabled
     if pipe.cfg.average_latent_estimations and nosie_pred_avg is not None:
-        nosie_pred_avg = noise_regularization(nosie_pred_avg, noise_pred_optimal, lambda_kl=pipe.cfg.noise_regularization_lambda_kl, lambda_ac=pipe.cfg.noise_regularization_lambda_ac, num_reg_steps=pipe.cfg.noise_regularization_num_reg_steps, num_ac_rolls=pipe.cfg.noise_regularization_num_ac_rolls, generator=generator)
-        approximated_z_tp1 = pipe.scheduler.inv_step(nosie_pred_avg, t, z_t, **extra_step_kwargs, return_dict=False)[0].detach()
+        nosie_pred_avg = noise_regularization(
+            nosie_pred_avg,
+            noise_pred_optimal,
+            lambda_kl=pipe.cfg.noise_regularization_lambda_kl,
+            lambda_ac=pipe.cfg.noise_regularization_lambda_ac,
+            num_reg_steps=pipe.cfg.noise_regularization_num_reg_steps,
+            num_ac_rolls=pipe.cfg.noise_regularization_num_ac_rolls,
+            generator=generator,
+        )
+        approximated_z_tp1 = pipe.scheduler.inv_step(
+            nosie_pred_avg, t, z_t, **extra_step_kwargs, return_dict=False
+        )[0].detach()
 
-    # perform noise correction
-    if pipe.cfg.perform_noise_correction: # False
+    # optional noise correction (unchanged)
+    if pipe.cfg.perform_noise_correction:  # False in your current config
         noise_pred = unet_pass(pipe, approximated_z_tp1, t, prompt_embeds, added_cond_kwargs)
 
-        # perform guidance
         if pipe.do_classifier_free_guidance:
             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
             noise_pred = noise_pred_uncond + pipe.guidance_scale * (noise_pred_text - noise_pred_uncond)
-        
-        pipe.scheduler.step_and_update_noise(noise_pred, t, approximated_z_tp1, z_t, return_dict=False, optimize_epsilon_type=pipe.cfg.perform_noise_correction)
+
+        pipe.scheduler.step_and_update_noise(
+            noise_pred,
+            t,
+            approximated_z_tp1,
+            z_t,
+            return_dict=False,
+            optimize_epsilon_type=pipe.cfg.perform_noise_correction,
+        )
 
     return approximated_z_tp1
+
 
 def spherical_dist_loss(x, y):
     return -x@y.T
