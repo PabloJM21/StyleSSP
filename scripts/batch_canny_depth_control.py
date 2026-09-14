@@ -563,25 +563,33 @@ def main() -> None:
             mask_image=entire_mask,
             image=content_image,
             control_image=control_image,
-            ip_adapter_image=style_image,
+
+            # 🔥 Disable IP-Adapter guidance
+            ip_adapter_image=None,
+
             generator=torch.Generator(device="cpu").manual_seed(cfg.seed),
             latents=latent_l,
             guidance_scale=cfg.guidance_scale,
             controlnet_conditioning_scale=controlnet_conditioning_scale,
-            npi_interp=0.5,
-            style_embeddings_instruct=style_embeddings_instruct,
-            content_embeddings_instruct=content_embeddings_instruct,
-            style_guidance_scale=cfg.style_guidance_scale,
-            content_guidance_scale=cfg.content_guidance_scale,
-            ip_instruct_model=ip_instruct_model,
+            npi_interp=0.0,
+
+            # 🔥 Disable ALL cond_fn guidance
+            style_embeddings_instruct=None,
+            content_embeddings_instruct=None,
+            style_guidance_scale=0.0,
+            content_guidance_scale=0.0,
+            ip_instruct_model=None,
             CSD_model=None,
-            inv_guidance=cfg.inv_guidance,
-            style_embedding=style_embeddings_instruct,
-            content_embedding=content_embeddings_instruct,
-            neg_style_embedding=content_style_instruct,
-            neg_content_embedding=style_content_embeddings,
-            do_NPT=True,
+            inv_guidance=0.0,
+            do_NPT=False,
+
+            # 🔥 Disable negative guidance too
+            style_embedding=None,
+            content_embedding=None,
+            neg_style_embedding=None,
+            neg_content_embedding=None,
         ).images[0]
+
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output.save(output_path)
