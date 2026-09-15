@@ -152,45 +152,48 @@ def inversion_step(
     approximated_z_tp1 = z_t.clone()
     for i in range(num_renoise_steps + 1):
         with torch.no_grad():
-            # noise regularization: double batch on first step
-            if pipe.cfg.noise_regularization_num_reg_steps > 0 and i == 0:
-                approximated_z_tp1 = torch.cat([z_tp1_forward, approximated_z_tp1])
-                prompt_embeds_in = torch.cat([prompt_embeds, prompt_embeds])
-                if added_cond_kwargs is not None:
-                    added_cond_kwargs_in = {}
-                    for k, v in added_cond_kwargs.items():
-                        if isinstance(v, torch.Tensor):
-                            added_cond_kwargs_in[k] = torch.cat([v, v])
-                        else:
-                            added_cond_kwargs_in[k] = v
+            # SDXL cannot safely handle dynamic batch doubling with added_cond_kwargs,
+            # so noise-regularization batch doubling is disabled.
+            # if pipe.cfg.noise_regularization_num_reg_steps > 0 and i == 0:
+            #     approximated_z_tp1 = torch.cat([z_tp1_forward, approximated_z_tp1])
+            #     prompt_embeds_in = torch.cat([prompt_embeds, prompt_embeds])
+            #     if added_cond_kwargs is not None:
+            #         added_cond_kwargs_in = {}
+            #         for k, v in added_cond_kwargs.items():
+            #             if isinstance(v, torch.Tensor):
+            #                 added_cond_kwargs_in[k] = torch.cat([v, v])
+            #             else:
+            #                 added_cond_kwargs_in[k] = v
+            #     else:
+            #         added_cond_kwargs_in = None
+            # else:
+            #     prompt_embeds_in = prompt_embeds
+            #     added_cond_kwargs_in = added_cond_kwargs
 
-                else:
-                    added_cond_kwargs_in = None
-            else:
-                prompt_embeds_in = prompt_embeds
-                added_cond_kwargs_in = added_cond_kwargs
+            prompt_embeds_in = prompt_embeds
+            added_cond_kwargs_in = added_cond_kwargs
 
             noise_pred = unet_pass(pipe, approximated_z_tp1, t, prompt_embeds_in, added_cond_kwargs_in)
 
             print("[INV] noise_pred min/max:", noise_pred.min().item(), noise_pred.max().item())
 
-            # noise regularization: split batch on first step
-            if pipe.cfg.noise_regularization_num_reg_steps > 0 and i == 0:
-                noise_pred_optimal, noise_pred = noise_pred.chunk(2)
-                if pipe.do_classifier_free_guidance:
-                    noise_pred_optimal_uncond, noise_pred_optimal_text = noise_pred_optimal.chunk(2)
-                    noise_pred_optimal = (
-                        noise_pred_optimal_uncond
-                        + pipe.guidance_scale * (noise_pred_optimal_text - noise_pred_optimal_uncond)
-                    )
-                noise_pred_optimal = noise_pred_optimal.detach()
+            # SDXL noise-regularization split of noise_pred is disabled to avoid batch mismatch.
+            # if pipe.cfg.noise_regularization_num_reg_steps > 0 and i == 0:
+            #     noise_pred_optimal, noise_pred = noise_pred.chunk(2)
+            #     if pipe.do_classifier_free_guidance:
+            #         noise_pred_optimal_uncond, noise_pred_optimal_text = noise_pred_optimal.chunk(2)
+            #         noise_pred_optimal = (
+            #             noise_pred_optimal_uncond
+            #             + pipe.guidance_scale * (noise_pred_optimal_text - noise_pred_optimal_uncond)
+            #         )
+            #     noise_pred_optimal = noise_pred_optimal.detach()
 
             # classifier-free guidance (standard)
             if pipe.do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + pipe.guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-            # average noise over renoise steps
+            # average noise over renoise steps (pure averaging, no extra regularization)
             if i >= avg_range[0] and i < avg_range[1]:
                 j = i - avg_range[0]
                 if nosie_pred_avg is None:
@@ -198,20 +201,21 @@ def inversion_step(
                 else:
                     nosie_pred_avg = j * nosie_pred_avg / (j + 1) + noise_pred / (j + 1)
 
-        if i >= avg_range[0] or (not pipe.cfg.average_latent_estimations and i > 0):
-            noise_pred_ = noise_regularization(
-                noise_pred,
-                noise_pred_optimal,
-                lambda_kl=pipe.cfg.noise_regularization_lambda_kl,
-                lambda_ac=pipe.cfg.noise_regularization_lambda_ac,
-                num_reg_steps=pipe.cfg.noise_regularization_num_reg_steps,
-                num_ac_rolls=pipe.cfg.noise_regularization_num_ac_rolls,
-                generator=generator,
-            )
-
-            has_nan = torch.isnan(noise_pred_).any().item()
-            if not has_nan:
-                noise_pred = noise_pred_
+        # SDXL-specific noise_regularization is disabled; DDIM inversion uses raw noise_pred.
+        # if i >= avg_range[0] or (not pipe.cfg.average_latent_estimations and i > 0):
+        #     noise_pred_ = noise_regularization(
+        #         noise_pred,
+        #         noise_pred_optimal,
+        #         lambda_kl=pipe.cfg.noise_regularization_lambda_kl,
+        #         lambda_ac=pipe.cfg.noise_regularization_lambda_ac,
+        #         num_reg_steps=pipe.cfg.noise_regularization_num_reg_steps,
+        #         num_ac_rolls=pipe.cfg.noise_regularization_num_ac_rolls,
+        #         generator=generator,
+        #     )
+        #
+        #     has_nan = torch.isnan(noise_pred_).any().item()
+        #     if not has_nan:
+        #         noise_pred = noise_pred_
 
         # 🔥 DDIM-style scheduler step — pure inversion, no extra guidance
         step_out = pipe.scheduler.step(
@@ -249,17 +253,18 @@ def inversion_step(
         #     )
         #     approximated_z_tp1 = step_out[0].detach()
 
-    # average latents if enabled
+    # average latents if enabled: keep averaging, but without extra noise_regularization.
     if pipe.cfg.average_latent_estimations and nosie_pred_avg is not None:
-        nosie_pred_avg = noise_regularization(
-            nosie_pred_avg,
-            noise_pred_optimal,
-            lambda_kl=pipe.cfg.noise_regularization_lambda_kl,
-            lambda_ac=pipe.cfg.noise_regularization_lambda_ac,
-            num_reg_steps=pipe.cfg.noise_regularization_num_reg_steps,
-            num_ac_rolls=pipe.cfg.noise_regularization_num_ac_rolls,
-            generator=generator,
-        )
+        # SDXL: use averaged noise directly, no KL/AC regularization.
+        # nosie_pred_avg = noise_regularization(
+        #     nosie_pred_avg,
+        #     noise_pred_optimal,
+        #     lambda_kl=pipe.cfg.noise_regularization_lambda_kl,
+        #     lambda_ac=pipe.cfg.noise_regularization_lambda_ac,
+        #     num_reg_steps=pipe.cfg.noise_regularization_num_reg_steps,
+        #     num_ac_rolls=pipe.cfg.noise_regularization_num_ac_rolls,
+        #     generator=generator,
+        # )
         step_out = pipe.scheduler.step(
             nosie_pred_avg,
             t,
