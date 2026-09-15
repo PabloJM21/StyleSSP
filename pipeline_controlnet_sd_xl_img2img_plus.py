@@ -1597,3 +1597,44 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
                 latents = latents / self.vae.config.scaling_factor
 
             image = self
+
+
+        # -----------------------------
+        # 14. Final decode + return
+        # -----------------------------
+        if not output_type == "latent":
+            needs_upcasting = self.vae.dtype == torch.float16 and self.vae.config.force_upcast
+
+            if needs_upcasting:
+                self.upcast_vae()
+                latents = latents.to(next(iter(self.vae.post_quant_conv.parameters())).dtype)
+
+            # unscale latents
+            if hasattr(self.vae.config, "latents_mean") and self.vae.config.latents_mean is not None:
+                latents_mean = torch.tensor(self.vae.config.latents_mean).view(1, 4, 1, 1).to(latents.device, latents.dtype)
+                latents_std = torch.tensor(self.vae.config.latents_std).view(1, 4, 1, 1).to(latents.device, latents.dtype)
+                latents = latents * latents_std / self.vae.config.scaling_factor + latents_mean
+            else:
+                latents = latents / self.vae.config.scaling_factor
+
+            image = self.vae.decode(latents, return_dict=False)[0]
+
+            if needs_upcasting:
+                self.vae.to(dtype=torch.float16)
+
+            image = self.image_processor.postprocess(image, output_type=output_type)
+
+        else:
+            image = latents
+
+        # watermark
+        if self.watermark is not None:
+            image = self.watermark.apply_watermark(image)
+
+        # free hooks
+        self.maybe_free_model_hooks()
+
+        if not return_dict:
+            return (image,)
+
+        return StableDiffusionXLPipelineOutput(images=image)
