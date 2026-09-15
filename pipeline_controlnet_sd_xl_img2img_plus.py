@@ -1205,11 +1205,15 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         **kwargs,
     ):
+
+        r"""
+        Examples:
         """
-        Clean SDXL img2img+ControlNet forward pass.
-        Full SDXL features preserved.
-        All InstantStyle+/cond_fn/inpaint guidance removed.
-        """
+
+        # Clean SDXL img2img+ControlNet forward pass.
+        # Full SDXL features preserved.
+        # All InstantStyle+/cond_fn/inpaint guidance removed.
+        
 
         callback = kwargs.pop("callback", None)
         callback_steps = kwargs.pop("callback_steps", None)
