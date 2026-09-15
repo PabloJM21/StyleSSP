@@ -18,7 +18,7 @@ from diffusers import AutoencoderKL, ControlNetModel, UniPCMultistepScheduler
 from diffusers.utils import load_image
 from transformers import AutoProcessor, Blip2ForConditionalGeneration, CLIPVisionModelWithProjection
 
-import infer_style as style_impl
+import infer_style_inpaint as style_impl
 from pipeline_controlnet_inpaint_sd_xl import StableDiffusionXLControlNetInpaintPipeline
 from src.config import RunConfig
 from src.eunms import Model_Type, Scheduler_Type

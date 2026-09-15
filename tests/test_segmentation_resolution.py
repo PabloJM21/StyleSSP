@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from scripts.batch_canny_depth_control import resolve_struct_seg_dict
+from scripts.batch_inpaint import resolve_struct_seg_dict
 
 
 def test_resolve_struct_seg_dict_returns_none_when_missing(tmp_path: Path) -> None:

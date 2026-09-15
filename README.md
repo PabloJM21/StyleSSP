@@ -38,6 +38,226 @@ pip install git+https://github.com/openai/CLIP.git
 
 The environment files are aligned with Python 3.11.6, and `xformers` is no longer required.
 
+
+## StyleSSP Pipeline (Paper Version)
+
+*(What the paper actually describes)*
+
+StyleSSP consists of three major components, each mathematically defined in the paper:
+
+### 1. DDIM Inversion + Frequency Manipulation (Section 4.1)
+
+The paper begins by mapping the content image into the diffusion latent space using DDIM inversion:
+
+$$z_T^c = \text{DDIM-Inv}(z_0^c)$$
+
+Then it applies low‑frequency filtering to the inverted latent:
+
+$$z_{T,L,\alpha}^c = \text{LPF}(z_T^c) + \mathcal{N}(0, \sigma^2) \cdot (1 - \alpha)$$
+
+**Where:**
+* **LPF** = low‑pass filter (frequency-domain smoothing)
+* **$\alpha$** = blending factor between original and low‑frequency latent
+* **$\sigma$** = noise strength for restoring stochasticity
+
+This produces a latent that preserves layout but removes high‑frequency content, making style injection easier.
+
+### 2. Negative Guidance via Inversion (Section 4.2)
+
+StyleSSP introduces negative guidance inside the inversion process:
+
+$$\hat{\epsilon}_\theta(z_t, t, C^+, C^-) = \epsilon_\theta(z_t, t, C^-) + \omega_i (\epsilon_\theta(z_t, t, C^+) - \epsilon_\theta(z_t, t, C^-))$$
+
+**Where:**
+* **$C^+$** = positive prompt embedding
+* **$C^-$** = negative prompt embedding
+* **$\omega_i$** = negative guidance scale
+
+This pushes the latent away from undesired content and toward desired content during inversion, not just during denoising.
+
+### 3. IP‑Instruct Negative Guidance (Section 4.2, Eq. 11)
+
+The paper replaces text prompts with IP‑Instruct embeddings:
+
+$$E^- = \text{concat}(\Phi(I_c)_s, \Phi(I_s)_c)$$
+
+**Where:**
+* **$\Phi(I_c)_s$** = style embedding of content image
+* **$\Phi(I_s)_c$** = content embedding of style image
+
+Then negative guidance becomes:
+
+$$\hat{\epsilon}_\theta(z_t, t, C^+, E^-) = \epsilon_\theta(z_t, t, E^-) + \omega_i (\epsilon_\theta(z_t, t, C^+) - \epsilon_\theta(z_t, t, E^-))$$
+
+This is the core innovation: use IP‑Instruct embeddings as negative guidance to push the latent toward the desired style while preserving content.
+
+### 4. Style Injection (Section 4.3)
+
+StyleSSP injects style features into specific UNet blocks, similar to InstantStyle:
+* Inject style features into block 0 / block 1 / block 2
+* Use IP‑Adapter or custom style injection
+* Combine with ControlNet to preserve layout
+
+This creates a controlled style transfer that respects content structure.
+
+---
+
+## 📘 Current SDXL Pipeline (Your Implementation)
+
+*(What your code actually does today)*
+
+Your batch script + `StableDiffusionXLControlNetInpaintPipeline` implements a subset of StyleSSP:
+
+### 1. DDIM Inversion (now correct)
+You now use:
+* `MyDDIMScheduler` for inversion
+* `UniPCMultistepScheduler` for inference
+
+This is correct and stable.
+
+### 2. Frequency Manipulation (partial)
+You call:
+```python
+_, latent_l, _ = style_impl.freq_exp(inv_latent, ...)
+```
+**But:**
+* No Gaussian noise term is added
+* No $\alpha$‑blending is applied
+* The filtered latent is not used inside inversion
+* The filtered latent is not used inside inference
+* The filtered latent is not used inside guidance
+
+So this is not yet the paper’s method.
+
+### 3. Negative Guidance (disabled)
+Your inversion step currently:
+* Does not compute $C^+$ / $C^-$
+* Does not compute $E^-$
+* Does not apply $\omega_i$
+* Does not apply negative guidance inside DDIM inversion
+* Has guidance block commented out
+
+So Section 4.2 is not implemented.
+
+### 4. IP‑Instruct Embeddings (computed but unused)
+You compute:
+* $\Phi(I_c)_s$
+* $\Phi(I_s)_c$
+* $\Phi(I_c)_c$
+* $\Phi(I_s)_s$
+
+**But:**
+* You never concatenate them into $E^-$
+* You never use $E^-$ inside UNet
+* You never use $E^-$ inside inversion
+* You never use $E^-$ inside inference
+
+So Section 4.2 (Eq. 11) is not implemented.
+
+### 5. Style Injection (not implemented)
+You load IP‑Adapter:
+```python
+pipe_inference.load_ip_adapter(...)
+```
+**But:**
+* You do not inject style into specific UNet blocks
+* You do not modulate block injection scale
+* You do not use InstantStyle‑style injection
+* You do not use style injection during inversion
+
+So Section 4.3 is not implemented.
+
+### 6. ControlNet (correct)
+Your pipeline uses:
+* Tile / Canny / Depth ControlNet
+* Correct conditioning scale
+* Correct layout preservation
+
+This matches the paper’s intent.
+
+---
+
+## 📘 How to Reproduce the Paper’s Behavior (Expansion Guidelines)
+
+*(Exact steps you must implement)*
+
+Below is the complete checklist to upgrade your SDXL pipeline to match StyleSSP.
+
+### A. Implement Full Frequency Manipulation (Section 4.1)
+Add:
+* Low‑pass filter (already implemented)
+* Gaussian noise term:
+  $$z_{T,L,\alpha}^c = \text{LPF}(z_T^c) + \mathcal{N}(0, \sigma^2)(1 - \alpha)$$
+* $\alpha$‑blending:
+  $$z_T' = \alpha z_T^c + (1 - \alpha)z_{T,L,\alpha}^c$$
+
+Use $z_T'$ as:
+* inversion latent
+* initial inference latent
+* guidance latent
+
+### B. Implement Negative Guidance via Inversion (Section 4.2)
+Inside DDIM inversion:
+* **Compute:**
+  ```text
+  C+ = positive prompt embedding
+  C- = negative prompt embedding
+  ```
+* **Compute noise predictions:**
+  ```text
+  eps_pos = UNet(z_t, t, C+)
+  eps_neg = UNet(z_t, t, C-)
+  ```
+* **Apply negative guidance:**
+  $$\hat{\epsilon} = \epsilon_{\text{neg}} + \omega_i (\epsilon_{\text{pos}} - \epsilon_{\text{neg}})$$
+* **Use `hat_eps` in DDIM step:**
+  ```python
+  step_out = scheduler.step(hat_eps, t, latents)
+  ```
+
+### C. Implement IP‑Instruct Negative Guidance (Eq. 11)
+* **Compute:**
+  ```text
+  E- = concat(Phi(Ic)_s, Phi(Is)_c)
+  ```
+* **Compute noise predictions:**
+  ```text
+  eps_pos = UNet(z_t, t, C+)
+  eps_neg = UNet(z_t, t, E-)
+  ```
+* **Apply:**
+  $$\hat{\epsilon} = \epsilon_{E^-} + \omega_i (\epsilon_{C^+} - \epsilon_{E^-})$$
+* Use `hat_eps` in DDIM step.
+
+### D. Implement Style Injection (Section 4.3)
+* **Choose block(s):** block 0 / block 1 / block 2
+* **Inject style features:** from IP‑Adapter or from $\Phi(I_s)_s$
+* **Use:**
+  ```python
+  down_block_additional_residuals
+  mid_block_additional_residuals
+  ```
+
+### E. Integrate Frequency Manipulation + Negative Guidance + Style Injection
+The full pipeline becomes:
+1. DDIM inversion $\rightarrow z_T$
+2. Frequency manipulation $\rightarrow z_T'$
+3. Negative guidance inside inversion $\rightarrow \hat{\epsilon}$
+4. Style injection inside UNet blocks
+5. ControlNet layout preservation
+6. UniPC inference with style/content guidance
+
+### F. Update Main Pipeline
+You must update:
+* `inversion_step`
+* `cond_fn`
+* `main()` latent handling
+* IP‑Adapter scale
+* UNet block injection
+* DDIM inversion math
+* Negative guidance math
+* Frequency manipulation usage
+
 ### Run
 
 The main batch entrypoint is:

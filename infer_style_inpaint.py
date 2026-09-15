@@ -41,7 +41,7 @@ from src.config import RunConfig
 
 from scipy.ndimage import gaussian_filter
 from inversion import run as invert
-from pipeline_controlnet_sd_xl_img2img_plus import StableDiffusionXLControlNetImg2ImgPipeline
+from pipeline_controlnet_inpaint_sd_xl import StableDiffusionXLControlNetInpaintPipeline
 
 from ip_adapter.pipeline_stable_diffusion_sdxl_extra_cfg import StableDiffusionXLPipelineExtraCFG
 from ip_adapter.pipeline_stable_diffusion_extra_cfg import StableDiffusionPipelineCFG
@@ -388,7 +388,7 @@ if __name__ == "__main__":
     ).to(config.device)
 
     vae = AutoencoderKL.from_pretrained("madebyollin/sdxl-vae-fp16-fix", torch_dtype=config.dtype).to(config.device)
-    pipe_inference = StableDiffusionXLControlNetImg2ImgPipeline.from_pretrained(
+    pipe_inference = StableDiffusionXLControlNetInpaintPipeline.from_pretrained(
                     # "./checkpoints/sdxlUnstableDiffusers_v8HeavensWrathVAE",
                     config.base_model_path,
                     controlnet=controlnet,
@@ -418,39 +418,30 @@ if __name__ == "__main__":
 
     save_name = config.content_image_dir.split('/')[-1][:-4] + '_' + config.style_image_dir.split('/')[-1][:-4]
     output = pipe_inference(
-        prompt=content_image_prompt,
-        negative_prompt=(
-            "watermark, lowres, low quality, worst quality, deformed, glitch, "
-            "low contrast, noisy, saturation, blurry"
-        ),
-
-        # SDXL img2img inputs
-        image=content_image,
-        strength=0.99,                         # REQUIRED for img2img+ControlNet
+        prompt=content_image_prompt,                    # prompt used for inversion
+        negative_prompt="watermark, lowres, low quality, worst quality, deformed, glitch, low contrast, noisy, saturation, blurry",
         num_inference_steps=config.num_inference_steps,
-        guidance_scale=config.guidance_scale,
-
-        # ControlNet conditioning
-        control_image=cond_image,
-        controlnet_conditioning_scale=controlnet_conditioning_scale,
-
-        # IP‑Adapter style injection
+        eta=1.0,
+        mask_image=entire_mask,
+        image=content_image,
+        control_image=cond_image, 
         ip_adapter_image=style_image,
-
-        # IP‑Instruct embeddings (still required by UNet)
+        generator=generator,
+        latents=latent_l,#inv_latent,#
+        guidance_scale=config.guidance_scale,
+        #denoising_start=0.0001,
+        controlnet_conditioning_scale=controlnet_conditioning_scale,
+        npi_interp=0.5,
         style_embeddings_instruct=style_embeddings_instruct,
         content_embeddings_instruct=content_embeddings_instruct,
         style_guidance_scale=config.style_guidance_scale,
         content_guidance_scale=config.content_guidance_scale,
         ip_instruct_model=ip_instruct_model,
-
-        # Latent injection (paper: DDIM inversion → freq_exp → img2img)
-        latents=latent_l,
-
-        # Deterministic generator
-        generator=generator,
+        CSD_model = None,#clip_model,
+        inv_guidance=config.inv_guidance,
+        feature_extractor=ip_instruct_model,
+        do_NPI = False,
     ).images[0]
-
     output.save(os.path.join(config.result_path, f"ours_{save_name}.png"))
         
     torch.cuda.empty_cache()
