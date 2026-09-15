@@ -157,14 +157,13 @@ def inversion_step(
                 approximated_z_tp1 = torch.cat([z_tp1_forward, approximated_z_tp1])
                 prompt_embeds_in = torch.cat([prompt_embeds, prompt_embeds])
                 if added_cond_kwargs is not None:
-                    added_cond_kwargs_in = {
-                        "text_embeds": torch.cat(
-                            [added_cond_kwargs["text_embeds"], added_cond_kwargs["text_embeds"]]
-                        ),
-                        "time_ids": torch.cat(
-                            [added_cond_kwargs["time_ids"], added_cond_kwargs["time_ids"]]
-                        ),
-                    }
+                    added_cond_kwargs_in = {}
+                    for k, v in added_cond_kwargs.items():
+                        if isinstance(v, torch.Tensor):
+                            added_cond_kwargs_in[k] = torch.cat([v, v])
+                        else:
+                            added_cond_kwargs_in[k] = v
+
                 else:
                     added_cond_kwargs_in = None
             else:
