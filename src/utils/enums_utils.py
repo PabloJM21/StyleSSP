@@ -11,6 +11,7 @@ from src.schedulers.euler_scheduler import MyEulerAncestralDiscreteScheduler
 from src.schedulers.lcm_scheduler import MyLCMScheduler
 from src.schedulers.ddim_scheduler import MyDDIMScheduler
 from src.pipes.sdxl_inversion_pipeline import SDXLDDIMPipeline
+from src.pipes.sdxl_inversion_pipeline_inpaint import SDXLDDIMPipeline as SDXLDDIMPipelineInpaint
 from src.pipes.sd_inversion_pipeline import SDDDIMPipeline
     
 def scheduler_type_to_class(scheduler_type):
@@ -125,10 +126,13 @@ def is_sd(model_type):
     else:
         raise ValueError("Unknown model type")
     
-def _get_pipes(model_type, device, model_name=None):
+def _get_pipes(model_type, device, model_name=None, inpaint=False):
     if model_name is None:
         model_name = model_type_to_model_name(model_type)
     pipeline_inf, pipeline_inv = model_type_to_class(model_type)
+
+    if inpaint:
+        pipeline_inv = SDXLDDIMPipelineInpaint
 
     if is_float16(model_type):
         pipe_inference = pipeline_inf.from_pretrained(
@@ -149,10 +153,10 @@ def _get_pipes(model_type, device, model_name=None):
     
     return pipe_inversion, pipe_inference
     
-def get_pipes(model_type, scheduler_type, device="cuda", model_name=None):
+def get_pipes(model_type, scheduler_type, device="cuda", model_name=None, inpaint=False):
     scheduler_class = scheduler_type_to_class(scheduler_type)
 
-    pipe_inversion, pipe_inference = _get_pipes(model_type, device, model_name)
+    pipe_inversion, pipe_inference = _get_pipes(model_type, device, model_name, inpaint)
     
     pipe_inference.scheduler = scheduler_class.from_config(pipe_inference.scheduler.config)
     pipe_inversion.scheduler = scheduler_class.from_config(pipe_inversion.scheduler.config)

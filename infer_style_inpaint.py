@@ -258,7 +258,7 @@ if __name__ == "__main__":
                 ])
     
     # inversion
-    pipe_inversion, pipe_inference = get_pipes(model_type, scheduler_type, device=device, model_name=config.base_model_path)#"./checkpoints/sdxlUnstableDiffusers_v8HeavensWrathVAE")
+    pipe_inversion, pipe_inference = get_pipes(model_type, scheduler_type, device=device, model_name=config.base_model_path, inpaint=True)#"./checkpoints/sdxlUnstableDiffusers_v8HeavensWrathVAE")
     # obtain content latent
     _, inv_latent, _, all_latents = invert(content_image,
                                            content_image_prompt,
