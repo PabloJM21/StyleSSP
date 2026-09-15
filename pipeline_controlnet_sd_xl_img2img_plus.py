@@ -166,9 +166,12 @@ def retrieve_latents(
     else:
         raise AttributeError("Could not access latents of provided encoder_output")
 
-def set_requires_grad(model, value):
+def set_requires_grad(model, value: bool):
+    if model is None:
+        return
     for param in model.parameters():
         param.requires_grad = value
+
 
 class StableDiffusionXLControlNetImg2ImgPipeline(
     DiffusionPipeline,
