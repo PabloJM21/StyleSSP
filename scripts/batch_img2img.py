@@ -270,7 +270,7 @@ def build_controlnet_bundle(config: RunConfig, device: str):
                 variant="fp16",
             ).to(device),
         ]
-        return controlnet, [0.4, 0.4]
+        return controlnet, [0.7, 0.7]
 
     controlnet = [
         ControlNetModel.from_pretrained(
