@@ -648,10 +648,10 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
         return extra_step_kwargs
 
     def set_requires_grad(model, value: bool):
-    if model is None:
-        return
-    for p in model.parameters():
-        p.requires_grad = value
+        if model is None:
+            return
+        for p in model.parameters():
+            p.requires_grad = value
 
 
     @torch.enable_grad()
