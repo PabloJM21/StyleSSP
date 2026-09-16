@@ -64,7 +64,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model_type", type=str, default="SDXL", choices=MODEL_TYPE_CHOICES)
     parser.add_argument("--scheduler_type", type=str, default="DDIM", choices=SCHEDULER_TYPE_CHOICES)
     parser.add_argument("--choose_pipeline", type=str, default="", choices=["", "sd15"])
-    parser.add_argument("--control_type", type=str, default="tile_canny", choices=CONTROL_TYPE_CHOICES)
+    parser.add_argument("--control_type", type=str, default="combine", choices=CONTROL_TYPE_CHOICES)
     parser.add_argument("--resolution", type=int, default=1024)
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--num_inference_steps", type=int, default=50)
@@ -620,7 +620,7 @@ def main() -> None:
             ip_adapter_image=style_image,
 
             # SDXL img2img parameters
-            strength=0.99,
+            strength=0.5,
             num_inference_steps=cfg.num_inference_steps,
             guidance_scale=cfg.guidance_scale,
             controlnet_conditioning_scale=controlnet_conditioning_scale,
