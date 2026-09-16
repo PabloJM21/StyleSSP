@@ -14,14 +14,25 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from huggingface_hub import hf_hub_download, snapshot_download
 import torch
-from diffusers import AutoencoderKL, ControlNetModel, UniPCMultistepScheduler
+from diffusers import AutoencoderKL, ControlNetModel, DDIMScheduler, UniPCMultistepScheduler
 from diffusers.utils import load_image
-from transformers import AutoProcessor, Blip2ForConditionalGeneration, CLIPVisionModelWithProjection
+from transformers import (
+    AutoProcessor,
+    Blip2ForConditionalGeneration,
+    CLIPVisionModelWithProjection,
+    DPTFeatureExtractor,
+    DPTForDepthEstimation,
+)
 
-import infer_style as style_impl
+from inversion import run as invert
+from ip_adapter.ip_adapter_instruct import IPAdapterInstruct, IPAdapterInstructSDXL
+from ip_adapter.pipeline_stable_diffusion_extra_cfg import StableDiffusionPipelineCFG
+from ip_adapter.pipeline_stable_diffusion_sdxl_extra_cfg import StableDiffusionXLPipelineExtraCFG
 from pipeline_controlnet_sd_xl_img2img_plus import StableDiffusionXLControlNetImg2ImgPipeline
 from src.config import RunConfig
 from src.eunms import Model_Type, Scheduler_Type
+from src.frequency_utils import freq_exp
+from src.utils.enums_utils import get_pipes
 
 
 CONTENT_PROMPT = "use the composition from the image"
@@ -30,6 +41,133 @@ STYLE_PROMPT = "use the style from the image"
 MODEL_TYPE_CHOICES = [member.name for member in Model_Type]
 SCHEDULER_TYPE_CHOICES = [member.name for member in Scheduler_Type]
 CONTROL_TYPE_CHOICES = ["tile", "canny", "depth", "combine", "tile_canny"]
+
+processor = None
+model = None
+
+
+def generate_caption(
+    image: Image.Image,
+    caption_processor=None,
+    caption_model=None,
+    text: str = None,
+    decoding_method: str = "Nucleus sampling",
+    temperature: float = 1.0,
+    length_penalty: float = 1.0,
+    repetition_penalty: float = 1.5,
+    max_length: int = 50,
+    min_length: int = 1,
+    num_beams: int = 5,
+    top_p: float = 0.9,
+) -> str:
+    active_processor = caption_processor if caption_processor is not None else processor
+    active_model = caption_model if caption_model is not None else model
+    if active_processor is None or active_model is None:
+        raise ValueError("Caption processor/model are not initialized. Pass them to generate_caption().")
+
+    if text is not None:
+        inputs = active_processor(images=image, text=text, return_tensors="pt").to("cuda", torch.float16)
+        generated_ids = active_model.generate(**inputs)
+    else:
+        inputs = active_processor(images=image, return_tensors="pt").to("cuda", torch.float16)
+        generated_ids = active_model.generate(
+            pixel_values=inputs.pixel_values,
+            do_sample=decoding_method == "Nucleus sampling",
+            temperature=temperature,
+            length_penalty=length_penalty,
+            repetition_penalty=repetition_penalty,
+            max_length=max_length,
+            min_length=min_length,
+            num_beams=num_beams,
+            top_p=top_p,
+            pad_token_id=active_processor.tokenizer.eos_token_id,
+        )
+
+    generated_text = active_processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+    return generated_text.strip()
+
+
+def get_depth_map(image, depth_estimator=None, feature_extractor=None, target_resolution=1024):
+    if depth_estimator is None:
+        depth_estimator = DPTForDepthEstimation.from_pretrained("Intel/dpt-hybrid-midas").to("cuda")
+    if feature_extractor is None:
+        feature_extractor = DPTFeatureExtractor.from_pretrained("Intel/dpt-hybrid-midas")
+
+    image = feature_extractor(images=image, return_tensors="pt").pixel_values.to("cuda")
+    with torch.no_grad(), torch.autocast("cuda"):
+        depth_map = depth_estimator(image).predicted_depth
+
+    depth_map = torch.nn.functional.interpolate(
+        depth_map.unsqueeze(1),
+        size=(target_resolution, target_resolution),
+        mode="bicubic",
+        align_corners=False,
+    )
+    depth_min = torch.amin(depth_map, dim=[1, 2, 3], keepdim=True)
+    depth_max = torch.amax(depth_map, dim=[1, 2, 3], keepdim=True)
+    depth_map = (depth_map - depth_min) / (depth_max - depth_min)
+    image = torch.cat([depth_map] * 3, dim=1)
+    image = image.permute(0, 2, 3, 1).cpu().numpy()[0]
+    image = Image.fromarray((image * 255.0).clip(0, 255).astype(np.uint8))
+    return image
+
+
+def get_canny_map(input_image_cv2):
+    input_image_cv2 = cv2.Canny(input_image_cv2, 100, 200)
+    input_image_cv2 = input_image_cv2[:, :, None]
+    input_image_cv2 = np.concatenate([input_image_cv2, input_image_cv2, input_image_cv2], axis=2)
+    return Image.fromarray(input_image_cv2)
+
+
+def init_models(config):
+    noise_scheduler = DDIMScheduler(
+        num_train_timesteps=1000,
+        beta_start=0.00085,
+        beta_end=0.012,
+        beta_schedule="scaled_linear",
+        clip_sample=False,
+        set_alpha_to_one=False,
+        steps_offset=1,
+    )
+
+    if config.choose_pipeline == "sd15":
+        ip_ckpt = "./checkpoints/models/ip-adapter-instruct-sd15.bin"
+        image_encoder_path = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+        pipe = StableDiffusionPipelineCFG.from_pretrained(
+            "runwayml/stable-diffusion-v1-5",
+            scheduler=noise_scheduler,
+            torch_dtype=torch.float16,
+            feature_extractor=None,
+            safety_checker=None,
+        )
+        ip_model = IPAdapterInstruct(
+            sd_pipe=pipe,
+            image_encoder_path=image_encoder_path,
+            ip_ckpt=ip_ckpt,
+            device=config.device,
+            dtypein=torch.float16,
+            num_tokens=16,
+        )
+    else:
+        ip_ckpt = "./checkpoints/models/ip-adapter-instruct-sdxl.bin"
+        image_encoder_path = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+        pipe = StableDiffusionXLPipelineExtraCFG.from_pretrained(
+            "stabilityai/stable-diffusion-xl-base-1.0",
+            scheduler=noise_scheduler,
+            torch_dtype=torch.float16,
+            feature_extractor=None,
+            safety_checker=None,
+        )
+        ip_model = IPAdapterInstructSDXL(
+            sd_pipe=pipe,
+            image_encoder_path=image_encoder_path,
+            ip_ckpt=ip_ckpt,
+            device=config.device,
+            dtypein=torch.float16,
+            num_tokens=16,
+        )
+
+    return ip_model
 
 
 def normalize_format(fmt: str) -> str:
@@ -227,8 +365,8 @@ def load_captioning_models():
 
 
 def load_depth_models():
-    depth_estimator = style_impl.DPTForDepthEstimation.from_pretrained("Intel/dpt-hybrid-midas").to("cuda")
-    feature_extractor = style_impl.DPTFeatureExtractor.from_pretrained("Intel/dpt-hybrid-midas")
+    depth_estimator = DPTForDepthEstimation.from_pretrained("Intel/dpt-hybrid-midas").to("cuda")
+    feature_extractor = DPTFeatureExtractor.from_pretrained("Intel/dpt-hybrid-midas")
     return depth_estimator, feature_extractor
 
 
@@ -299,13 +437,13 @@ def build_control_image(
     if config.control_type == "canny":
         input_image_cv2 = cv2.imread(str(content_image_path))
         input_image_cv2 = np.array(input_image_cv2)
-        anyline_image = style_impl.get_canny_map(input_image_cv2)
+        anyline_image = get_canny_map(input_image_cv2)
         return anyline_image.resize((config.resolution, config.resolution))
 
     if config.control_type == "depth":
         if depth_models is None:
             raise ValueError("Depth models are required for control_type=depth")
-        depth_image = style_impl.get_depth_map(
+        depth_image = get_depth_map(
             content_image,
             depth_estimator=depth_models[0],
             feature_extractor=depth_models[1],
@@ -316,7 +454,7 @@ def build_control_image(
     if config.control_type == "combine":
         if depth_models is None:
             raise ValueError("Depth models are required for control_type=combine")
-        depth_image = style_impl.get_depth_map(
+        depth_image = get_depth_map(
             content_image,
             depth_estimator=depth_models[0],
             feature_extractor=depth_models[1],
@@ -326,7 +464,7 @@ def build_control_image(
 
         input_image_cv2 = cv2.imread(str(content_image_path))
         input_image_cv2 = np.array(input_image_cv2)
-        anyline_image = style_impl.get_canny_map(input_image_cv2)
+        anyline_image = get_canny_map(input_image_cv2)
         cond_canny_image = anyline_image.resize((config.resolution, config.resolution))
         return [cond_depth_image, cond_canny_image]
 
@@ -335,7 +473,7 @@ def build_control_image(
 
     input_image_cv2 = cv2.imread(str(content_image_path))
     input_image_cv2 = np.array(input_image_cv2)
-    anyline_image = style_impl.get_canny_map(input_image_cv2)
+    anyline_image = get_canny_map(input_image_cv2)
     cond_canny_image = anyline_image.resize((config.resolution, config.resolution))
     return [cond_tile_image, cond_canny_image]
 
@@ -437,8 +575,8 @@ def main() -> None:
     if args.control_type in {"depth", "combine"}:
         depth_models = load_depth_models()
 
-    ip_instruct_model = style_impl.init_models(bootstrap_cfg)
-    pipe_inversion, pipe_inference_ref = style_impl.get_pipes(
+    ip_instruct_model = init_models(bootstrap_cfg)
+    pipe_inversion, pipe_inference_ref = get_pipes(
         bootstrap_cfg.model_type,
         bootstrap_cfg.scheduler_type,
         device=bootstrap_cfg.device,
@@ -498,7 +636,7 @@ def main() -> None:
         weight_name="ip-adapter_sdxl_vit-h.safetensors",
         image_encoder_folder=None,
     )
-    pipe_inference.set_ip_adapter_scale({"up": {"block_0": [0.0, 2.5, 0.0]}})
+    pipe_inference.set_ip_adapter_scale({"up": {"block_0": [0.0, 5.0, 0.0]}})
 
     # ---------------------------------------------------------
     # 🔥 Debug inference scheduler / VAE / UNet AFTER inference pipe is created
@@ -547,7 +685,7 @@ def main() -> None:
         )
 
         if cfg.content_image_prompt is None:
-            content_image_prompt = style_impl.generate_caption(
+            content_image_prompt = generate_caption(
                 content_image,
                 caption_processor=caption_processor,
                 caption_model=caption_model,
@@ -569,7 +707,7 @@ def main() -> None:
 
         entire_mask = Image.new("RGB", (cfg.resolution, cfg.resolution), color=(255, 255, 255))
 
-        _, inv_latent, _, all_latents = style_impl.invert(
+        _, inv_latent, _, all_latents = invert(
             content_image,
             content_image_prompt,
             cfg,
@@ -604,7 +742,7 @@ def main() -> None:
 
 
 
-        _, latent_l, _ = style_impl.freq_exp(inv_latent, d_s=0.3, d_t=0.9, alpha=0.7, filter_type="gaussian_b")
+        _, latent_l, _ = freq_exp(inv_latent, d_s=0.3, d_t=0.9, alpha=0.7, filter_type="gaussian_b")
         latent_l = latent_l.to(inv_latent.dtype)
 
         del all_latents
