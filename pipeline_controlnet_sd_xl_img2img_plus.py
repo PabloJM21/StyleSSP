@@ -647,6 +647,132 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
             extra_step_kwargs["generator"] = generator
         return extra_step_kwargs
 
+    def set_requires_grad(model, value: bool):
+    if model is None:
+        return
+    for p in model.parameters():
+        p.requires_grad = value
+
+
+    @torch.enable_grad()
+    def cond_fn(
+        self,
+        latents: torch.Tensor,
+        timestep: torch.Tensor,
+        index: int,
+        prompt_embeds: torch.Tensor,
+        down_block_res_samples,
+        mid_block_res_sample,
+        added_cond_kwargs: dict,
+        noise_pred_original: torch.Tensor,
+        style_embeddings_clip: Optional[torch.Tensor],
+        style_guidance_scale: float,
+        best_style_sim: float,
+        content_embeddings_clip: Optional[torch.Tensor],
+        content_guidance_scale: float,
+        best_content_sim: float,
+        ip_instruct_model=None,
+        CSD_model=None,
+    ):
+        """
+        SDXL-safe forward guidance:
+        - Uses CLIP/IP-Instruct style & content embeddings
+        - Clamps VAE input to avoid FP16 overflow
+        - Returns a surrogate gradient scaled by scheduler noise level
+        """
+
+        # 1) Clone latents for gradient
+        latents = latents.detach().clone().requires_grad_(True)
+
+        # UNet forward on scaled latents
+        latent_model_input = self.scheduler.scale_model_input(latents, timestep)
+        noise_pred = self.unet(
+            latent_model_input,
+            timestep,
+            encoder_hidden_states=prompt_embeds,
+            cross_attention_kwargs=self.cross_attention_kwargs,
+            down_block_additional_residuals=down_block_res_samples,
+            mid_block_additional_residual=mid_block_res_sample,
+            added_cond_kwargs=added_cond_kwargs,
+            return_dict=False,
+        )[0]
+
+        # 2) Reconstruct x0 and x_t (DDIM-style)
+        alpha_prod_t = self.scheduler.alphas_cumprod[timestep]
+        beta_prod_t = 1 - alpha_prod_t
+
+        pred_original_sample = (latents - beta_prod_t**0.5 * noise_pred) / alpha_prod_t**0.5
+        fac = torch.sqrt(beta_prod_t)
+        sample = pred_original_sample * fac + latents * (1 - fac)
+
+        # 3) Clamp to avoid FP16 overflow
+        sample = sample / self.vae.config.scaling_factor
+        sample = torch.clamp(sample, -10.0, 10.0)
+
+        # 4) VAE decode in fp16, no-grad
+        tmp_dtype = torch.float16
+        self.vae.to(dtype=tmp_dtype)
+        sample = sample.to(dtype=tmp_dtype)
+
+        with torch.no_grad():
+            image = self.vae.decode(sample, return_dict=False)[0]
+
+        # Normalize to [0,1]
+        image = (image / 2 + 0.5).clamp(0, 1)
+
+        # 5) CLIP / IP-Instruct embeddings
+        if ip_instruct_model is None:
+            # Use CSD_model (CLIP-style)
+            set_requires_grad(CSD_model, False)
+            clip_input = self.normalize(transforms.Resize(224)(image[0:1]))
+            clip_input = clip_input.to(torch.float32)
+            CSD_model.to(torch.float32)
+            _, content_output, image_embeddings_clip = CSD_model(clip_input)
+        else:
+            # Use IP-Instruct model
+            image_tensor = transforms.Resize(224)(image[0:1])
+            clip_image = image_tensor.to(self.device, dtype=tmp_dtype).to(torch.float32)
+            image_embeddings_clip = ip_instruct_model.get_decouple_embeds(
+                clip_image=clip_image, prompt="", query="use the style from the image"
+            )
+            content_output = ip_instruct_model.get_decouple_embeds(
+                clip_image=clip_image, prompt="", query="use the composition from the image"
+            )
+
+        # 6) Style & content losses
+        loss = 0.0
+
+        if style_embeddings_clip is not None and style_guidance_scale > 0 and index < 20:
+            style_loss = (1 - torch.nn.CosineSimilarity(dim=-1)(
+                image_embeddings_clip, style_embeddings_clip
+            ).mean()) * style_guidance_scale
+            loss += style_loss
+
+        if content_embeddings_clip is not None and content_guidance_scale > 0 and index >= 20:
+            content_loss = (1 - torch.nn.CosineSimilarity(dim=-1)(
+                content_output, content_embeddings_clip
+            ).mean()) * content_guidance_scale
+            loss += content_loss
+
+        # 7) Surrogate gradient (no backprop through VAE)
+        #    Scale by scheduler noise level via noise_pred_original
+        grads = -loss * noise_pred_original
+
+        # Track best sims (optional, but useful)
+        if style_embeddings_clip is not None:
+            sim_style = (image_embeddings_clip @ style_embeddings_clip.mT).mean()
+            if sim_style > 0.20 and sim_style > best_style_sim:
+                best_style_sim = sim_style
+
+        if content_embeddings_clip is not None:
+            sim_content = (content_output @ content_embeddings_clip.mT).mean()
+            if sim_content > 0.20 and sim_content > best_content_sim:
+                best_content_sim = sim_content
+
+        # Return gradient scaled by sqrt(beta_t), plus updated sims
+        return torch.sqrt(beta_prod_t) * grads, latents, best_style_sim, best_content_sim
+
+
     def check_inputs(
         self,
         prompt,
@@ -1203,17 +1329,18 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
+        # style/content guidance (InstantStyle+/IP‑Instruct)
+        style_embeddings_clip: Optional[torch.Tensor] = None,
+        style_guidance_scale: float = 0.0,
+        content_embeddings_clip: Optional[torch.Tensor] = None,
+        content_guidance_scale: float = 0.0,
+        ip_instruct_model: Optional[Any] = None,
+        CSD_model: Optional[Any] = None,
         **kwargs,
     ):
-
         r"""
         Examples:
         """
-
-        # Clean SDXL img2img+ControlNet forward pass.
-        # Full SDXL features preserved.
-        # All InstantStyle+/cond_fn/inpaint guidance removed.
-        
 
         callback = kwargs.pop("callback", None)
         callback_steps = kwargs.pop("callback_steps", None)
@@ -1248,9 +1375,7 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
                 mult * [control_guidance_end],
             )
 
-        # -----------------------------
         # 1. Check inputs
-        # -----------------------------
         self.check_inputs(
             prompt,
             prompt_2,
@@ -1278,9 +1403,7 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
         self._denoising_end = denoising_end
         self._denoising_start = denoising_start
 
-        # -----------------------------
         # 2. Batch size
-        # -----------------------------
         if prompt is not None and isinstance(prompt, str):
             batch_size = 1
         elif prompt is not None and isinstance(prompt, list):
@@ -1290,9 +1413,7 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
 
         device = self._execution_device
 
-        # -----------------------------
         # 3. Encode prompt
-        # -----------------------------
         text_encoder_lora_scale = (
             self.cross_attention_kwargs.get("scale", None) if self.cross_attention_kwargs is not None else None
         )
@@ -1317,9 +1438,7 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
             clip_skip=self.clip_skip,
         )
 
-        # -----------------------------
         # 4. IP‑Adapter embeddings
-        # -----------------------------
         if ip_adapter_image is not None or ip_adapter_image_embeds is not None:
             image_embeds = self.prepare_ip_adapter_image_embeds(
                 ip_adapter_image,
@@ -1331,15 +1450,11 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
         else:
             image_embeds = None
 
-        # -----------------------------
         # 5. Preprocess image
-        # -----------------------------
         if image is not None:
             image = self.image_processor.preprocess(image, height=height, width=width).to(dtype=torch.float32)
 
-        # -----------------------------
         # 6. Preprocess ControlNet image(s)
-        # -----------------------------
         if isinstance(controlnet, ControlNetModel):
             control_image = self.prepare_control_image(
                 image=control_image,
@@ -1373,27 +1488,23 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
         else:
             assert False
 
-        # -----------------------------
         # 7. Timesteps
-        # -----------------------------
         def denoising_value_valid(dnv):
-            return isinstance(self.denoising_end, float) and 0 < dnv < 1
+            return isinstance(dnv, float) and 0 < dnv < 1
 
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps, num_inference_steps = self.get_timesteps(
             num_inference_steps,
             strength,
             device,
-            denoising_start=self.denoising_start if denoising_value_valid(self.denoising_start) else None,
+            denoising_start=self._denoising_start if denoising_value_valid(self._denoising_start) else None,
         )
         latent_timestep = timesteps[:1].repeat(batch_size * num_images_per_prompt)
         self._num_timesteps = len(timesteps)
 
-        add_noise = True if self.denoising_start is None else False
+        add_noise = True if self._denoising_start is None else False
 
-        # -----------------------------
         # 8. Prepare latents
-        # -----------------------------
         if latents is None:
             latents = self.prepare_latents(
                 image,
@@ -1406,14 +1517,10 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
                 add_noise,
             )
 
-        # -----------------------------
         # 9. Extra step kwargs
-        # -----------------------------
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        # -----------------------------
         # 10. ControlNet keep mask
-        # -----------------------------
         controlnet_keep = []
         for i in range(len(timesteps)):
             keeps = [
@@ -1422,9 +1529,7 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
             ]
             controlnet_keep.append(keeps[0] if isinstance(controlnet, ControlNetModel) else keeps)
 
-        # -----------------------------
         # 11. SDXL time IDs
-        # -----------------------------
         if isinstance(control_image, list):
             original_size = original_size or control_image[0].shape[-2:]
         else:
@@ -1467,21 +1572,18 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
         add_text_embeds = add_text_embeds.to(device)
         add_time_ids = add_time_ids.to(device)
 
-        # -----------------------------
-        # 12. Denoising loop (NO cond_fn)
-        # -----------------------------
+        # 12. Denoising loop with SDXL‑safe cond_fn
+        best_style_sim, best_content_sim = 0.0, 0.0
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
 
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
-
                 latent_model_input = (
                     torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                 )
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
                 added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
-
                 if ip_adapter_image is not None or ip_adapter_image_embeds is not None:
                     added_cond_kwargs["image_embeds"] = image_embeds
 
@@ -1539,6 +1641,29 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
+                # SDXL‑safe style/content guidance
+                if (style_guidance_scale > 0 or content_guidance_scale > 0) and (
+                    style_embeddings_clip is not None or content_embeddings_clip is not None
+                ):
+                    noise_pred, latents, best_style_sim, best_content_sim = self.cond_fn(
+                        latents=latents,
+                        timestep=t,
+                        index=i,
+                        prompt_embeds=prompt_embeds,
+                        down_block_res_samples=down_block_res_samples,
+                        mid_block_res_sample=mid_block_res_sample,
+                        added_cond_kwargs=added_cond_kwargs,
+                        noise_pred_original=noise_pred,
+                        style_embeddings_clip=style_embeddings_clip,
+                        style_guidance_scale=style_guidance_scale,
+                        best_style_sim=best_style_sim,
+                        content_embeddings_clip=content_embeddings_clip,
+                        content_guidance_scale=content_guidance_scale,
+                        best_content_sim=best_content_sim,
+                        ip_instruct_model=ip_instruct_model,
+                        CSD_model=CSD_model,
+                    )
+
                 # DDIM / UniPC step
                 latents = self.scheduler.step(
                     noise_pred,
@@ -1572,9 +1697,7 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
                         step_idx = i // getattr(self.scheduler, "order", 1)
                         callback(step_idx, t, latents)
 
-        # -----------------------------
-        # 13. Decode latents
-        # -----------------------------
+        # 13. Final decode + return
         if not output_type == "latent":
             needs_upcasting = self.vae.dtype == torch.float16 and self.vae.config.force_upcast
 
@@ -1582,34 +1705,6 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
                 self.upcast_vae()
                 latents = latents.to(next(iter(self.vae.post_quant_conv.parameters())).dtype)
 
-            has_latents_mean = hasattr(self.vae.config, "latents_mean") and self.vae.config.latents_mean is not None
-            has_latents_std = hasattr(self.vae.config, "latents_std") and self.vae.config.latents_std is not None
-
-            if has_latents_mean and has_latents_std:
-                latents_mean = (
-                    torch.tensor(self.vae.config.latents_mean).view(1, 4, 1, 1).to(latents.device, latents.dtype)
-                )
-                latents_std = (
-                    torch.tensor(self.vae.config.latents_std).view(1, 4, 1, 1).to(latents.device, latents.dtype)
-                )
-                latents = latents * latents_std / self.vae.config.scaling_factor + latents_mean
-            else:
-                latents = latents / self.vae.config.scaling_factor
-
-            image = self
-
-
-        # -----------------------------
-        # 14. Final decode + return
-        # -----------------------------
-        if not output_type == "latent":
-            needs_upcasting = self.vae.dtype == torch.float16 and self.vae.config.force_upcast
-
-            if needs_upcasting:
-                self.upcast_vae()
-                latents = latents.to(next(iter(self.vae.post_quant_conv.parameters())).dtype)
-
-            # unscale latents
             if hasattr(self.vae.config, "latents_mean") and self.vae.config.latents_mean is not None:
                 latents_mean = torch.tensor(self.vae.config.latents_mean).view(1, 4, 1, 1).to(latents.device, latents.dtype)
                 latents_std = torch.tensor(self.vae.config.latents_std).view(1, 4, 1, 1).to(latents.device, latents.dtype)
@@ -1623,18 +1718,16 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
                 self.vae.to(dtype=torch.float16)
 
             image = self.image_processor.postprocess(image, output_type=output_type)
-
         else:
             image = latents
 
-        # watermark
         if self.watermark is not None:
             image = self.watermark.apply_watermark(image)
 
-        # free hooks
         self.maybe_free_model_hooks()
 
         if not return_dict:
             return (image,)
 
         return StableDiffusionXLPipelineOutput(images=image)
+
