@@ -660,10 +660,6 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
         latents: torch.Tensor,
         timestep: torch.Tensor,
         index: int,
-        prompt_embeds: torch.Tensor,
-        down_block_res_samples,
-        mid_block_res_sample,
-        added_cond_kwargs: dict,
         noise_pred_original: torch.Tensor,
         style_embeddings_clip: Optional[torch.Tensor],
         style_guidance_scale: float,
@@ -675,63 +671,45 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
         CSD_model=None,
     ):
         """
-        SDXL-safe forward guidance:
-        - Uses CLIP/IP-Instruct style & content embeddings
-        - Clamps VAE input to avoid FP16 overflow
-        - Returns a surrogate gradient scaled by scheduler noise level
+        Classifier-style guidance that only backprops through VAE decode + CLIP/IP-Instruct,
+        never through the UNet. x0 is treated as a detached leaf; the gradient is converted
+        back into eps-space analytically.
         """
+        latents = latents.detach()
+        noise_pred_original_detached = noise_pred_original.detach()
 
-        # 1) Clone latents for gradient
-        latents = latents.detach().clone().requires_grad_(True)
-
-        # UNet forward on scaled latents
-        latent_model_input = self.scheduler.scale_model_input(latents, timestep)
-        noise_pred = self.unet(
-            latent_model_input,
-            timestep,
-            encoder_hidden_states=prompt_embeds,
-            cross_attention_kwargs=self.cross_attention_kwargs,
-            down_block_additional_residuals=down_block_res_samples,
-            mid_block_additional_residual=mid_block_res_sample,
-            added_cond_kwargs=added_cond_kwargs,
-            return_dict=False,
-        )[0]
-
-        # 2) Reconstruct x0 and x_t (DDIM-style)
         alpha_prod_t = self.scheduler.alphas_cumprod[timestep]
         beta_prod_t = 1 - alpha_prod_t
+        sqrt_alpha_t = alpha_prod_t**0.5
+        sqrt_beta_t = beta_prod_t**0.5
 
-        pred_original_sample = (latents - beta_prod_t**0.5 * noise_pred) / alpha_prod_t**0.5
+        # 1) Derive x0 from the already-computed (CFG'd) noise prediction, no grad needed here
+        with torch.no_grad():
+            pred_original_sample = (latents - sqrt_beta_t * noise_pred_original_detached) / sqrt_alpha_t
+
+        # 2) Make x0 the leaf that requires grad — this is where the graph starts
+        x0 = pred_original_sample.detach().clone().float().requires_grad_(True)
+
+        # 3) Optional xt-blend for a more realistic preview at high noise (kept from your original)
         fac = torch.sqrt(beta_prod_t)
-        sample = pred_original_sample * fac + latents * (1 - fac)
+        sample = x0 * fac + latents.float() * (1 - fac)
 
-        # 3) Clamp to avoid FP16 overflow
+        # 4) Clamp for stability, then decode in fp32 (grad-enabled)
         sample = sample / self.vae.config.scaling_factor
         sample = torch.clamp(sample, -10.0, 10.0)
 
-        # 4) VAE decode in fp16, no-grad
-        tmp_dtype = torch.float16
-        self.vae.to(dtype=tmp_dtype)
-        sample = sample.to(dtype=tmp_dtype)
-
-        with torch.no_grad():
-            image = self.vae.decode(sample, return_dict=False)[0]
-
-        # Normalize to [0,1]
+        self.vae.to(dtype=torch.float32)
+        image = self.vae.decode(sample, return_dict=False)[0]
         image = (image / 2 + 0.5).clamp(0, 1)
 
-        # 5) CLIP / IP-Instruct embeddings
+        # 5) CLIP / IP-Instruct embeddings, fp32, grad-enabled
         if ip_instruct_model is None:
-            # Use CSD_model (CLIP-style)
             set_requires_grad(CSD_model, False)
-            clip_input = self.normalize(transforms.Resize(224)(image[0:1]))
-            clip_input = clip_input.to(torch.float32)
+            clip_input = self.normalize(transforms.Resize(224)(image[0:1])).to(torch.float32)
             CSD_model.to(torch.float32)
             _, content_output, image_embeddings_clip = CSD_model(clip_input)
         else:
-            # Use IP-Instruct model
-            image_tensor = transforms.Resize(224)(image[0:1])
-            clip_image = image_tensor.to(self.device, dtype=tmp_dtype).to(torch.float32)
+            clip_image = transforms.Resize(224)(image[0:1]).to(self.device, dtype=torch.float32)
             image_embeddings_clip = ip_instruct_model.get_decouple_embeds(
                 clip_image=clip_image, prompt="", query="use the style from the image"
             )
@@ -739,38 +717,50 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
                 clip_image=clip_image, prompt="", query="use the composition from the image"
             )
 
-        # 6) Style & content losses
+        # 6) Loss
         loss = 0.0
-
         if style_embeddings_clip is not None and style_guidance_scale > 0 and index < 20:
             style_loss = (1 - torch.nn.CosineSimilarity(dim=-1)(
                 image_embeddings_clip, style_embeddings_clip
             ).mean()) * style_guidance_scale
-            loss += style_loss
+            loss = loss + style_loss
 
         if content_embeddings_clip is not None and content_guidance_scale > 0 and index >= 20:
             content_loss = (1 - torch.nn.CosineSimilarity(dim=-1)(
                 content_output, content_embeddings_clip
             ).mean()) * content_guidance_scale
-            loss += content_loss
+            loss = loss + content_loss
 
-        # 7) Surrogate gradient (no backprop through VAE)
-        #    Scale by scheduler noise level via noise_pred_original
-        grads = -loss * noise_pred_original
+        # 7) Real gradient — but only through VAE decode + CLIP, never through the UNet
+        if torch.is_tensor(loss):
+            grad_x0 = torch.autograd.grad(loss, x0, retain_graph=False)[0]
+        else:
+            grad_x0 = torch.zeros_like(x0)
 
-        # Track best sims (optional, but useful)
-        if style_embeddings_clip is not None:
-            sim_style = (image_embeddings_clip @ style_embeddings_clip.mT).mean()
-            if sim_style > 0.20 and sim_style > best_style_sim:
-                best_style_sim = sim_style
+        # 8) Gradient-descend x0, then convert the *change* back into eps-space analytically.
+        #    x0 = (latents - sqrt_beta_t * eps) / sqrt_alpha_t
+        #    => d(eps)/d(x0) = -sqrt_alpha_t / sqrt_beta_t
+        x0_step = -grad_x0  # gradient descent direction on the loss
+        eps_correction = (-sqrt_alpha_t / sqrt_beta_t) * x0_step
+        eps_correction = eps_correction.to(noise_pred_original.dtype)
 
-        if content_embeddings_clip is not None:
-            sim_content = (content_output @ content_embeddings_clip.mT).mean()
-            if sim_content > 0.20 and sim_content > best_content_sim:
-                best_content_sim = sim_content
+        noise_pred = noise_pred_original + eps_correction
 
-        # Return gradient scaled by sqrt(beta_t), plus updated sims
-        return torch.sqrt(beta_prod_t) * grads, latents, best_style_sim, best_content_sim
+        # 9) Track best sims for logging (no grad needed)
+        with torch.no_grad():
+            if style_embeddings_clip is not None:
+                sim_style = (image_embeddings_clip.detach() @ style_embeddings_clip.mT).mean()
+                if sim_style > 0.20 and sim_style > best_style_sim:
+                    best_style_sim = sim_style
+            if content_embeddings_clip is not None:
+                sim_content = (content_output.detach() @ content_embeddings_clip.mT).mean()
+                if sim_content > 0.20 and sim_content > best_content_sim:
+                    best_content_sim = sim_content
+
+        del image, sample, x0
+        torch.cuda.empty_cache()
+
+        return noise_pred, latents, best_style_sim, best_content_sim
 
 
     def check_inputs(
