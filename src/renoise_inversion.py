@@ -242,6 +242,7 @@ def inversion_step(
                 content_embedding=content_embedding,
                 neg_style_embedding=neg_style_embedding,
                 neg_content_embedding=neg_content_embedding,
+                clip_model_used=False,
                 get_grad_guidance=pipe.cfg.get_grad_guidance,
             )
 
