@@ -14,6 +14,8 @@ normalize = transforms.Normalize(
 
 def spherical_dist_loss(x, y):
     # Ensure both are [N, D]
+    print(f"x.shape[0]: {x.shape[0]}")
+    print(f"y.shape[0]: {y.shape[0]}")
     if x.ndim == 2 and y.ndim == 2 and x.shape[0] != y.shape[0]:
         # broadcast pooled embedding to match token count
         if x.shape[0] == 1:
