@@ -13,17 +13,24 @@ normalize = transforms.Normalize(
 
 
 def spherical_dist_loss(x, y):
-    # Ensure both are [N, D]
-    print(f"x.shape[0]: {x.shape[0]}")
-    print(f"y.shape[0]: {y.shape[0]}")
-    if x.ndim == 2 and y.ndim == 2 and x.shape[0] != y.shape[0]:
-        # broadcast pooled embedding to match token count
+    # Flatten everything to [N, D]
+    x = x.view(x.shape[0], -1)
+    y = y.view(y.shape[0], -1)
+
+    # Normalize
+    x = F.normalize(x, dim=-1)
+    y = F.normalize(y, dim=-1)
+
+    # If shapes differ (1 vs 16 tokens), broadcast pooled embedding
+    if x.shape[0] != y.shape[0]:
         if x.shape[0] == 1:
             x = x.expand(y.shape[0], -1)
         elif y.shape[0] == 1:
             y = y.expand(x.shape[0], -1)
 
-    return -(x @ y.T)
+    # Cosine similarity loss
+    return -(x * y).sum(dim=-1).mean()
+
 
 
 
