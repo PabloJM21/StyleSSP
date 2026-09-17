@@ -719,7 +719,7 @@ def main() -> None:
             content_embedding=content_embeddings_instruct,
             neg_style_embedding=content_style_instruct,
             neg_content_embedding=style_content_embeddings,
-            enable_guidance=True,
+            enable_guidance=False,
             used_NPI_guidance=True,
         )
 

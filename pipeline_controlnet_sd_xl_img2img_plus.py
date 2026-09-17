@@ -1573,7 +1573,16 @@ class StableDiffusionXLControlNetImg2ImgPipeline(
                 )
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-                added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
+                added_cond_kwargs = {
+                    "text_embeds": add_text_embeds,
+                    "time_ids": add_time_ids,
+                    "style_embeddings_instruct": style_embeddings_instruct,
+                    "content_embeddings_instruct": content_embeddings_instruct,
+                    "style_guidance_scale": cfg.style_guidance_scale,
+                    "content_guidance_scale": cfg.content_guidance_scale,
+                    "ip_instruct_model": ip_instruct_model,
+                }
+
                 if ip_adapter_image is not None or ip_adapter_image_embeds is not None:
                     added_cond_kwargs["image_embeds"] = image_embeds
 
