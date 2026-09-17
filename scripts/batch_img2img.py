@@ -211,15 +211,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_num_renoise_steps_first_step", type=int, default=5)
     parser.add_argument("--inv_guidance_scale", type=float, default=1.5)
     parser.add_argument("--guidance_scale", type=float, default=5.0, help="Direct prompt strength.")
-    parser.add_argument("--style_guidance_scale", type=float, default=0.0, help="Direct style influence scale.")
+    parser.add_argument("--style_guidance_scale", type=float, default=1.0, help="Direct style influence scale.")
     parser.add_argument(
         "--content_guidance_scale",
         type=float,
-        default=0.0,
+        default=1.0,
         help="Direct structure/content influence scale.",
     )
-    parser.add_argument("--inv_style_guidance_scale", type=float, default=0.0)
-    parser.add_argument("--inv_content_guidance_scale", type=float, default=0.0)
+    parser.add_argument("--inv_style_guidance_scale", type=float, default=1.0)
+    parser.add_argument("--inv_content_guidance_scale", type=float, default=1.0)
     parser.add_argument("--inv_neg_style_guidance_scale", type=float, default=0.0)
     parser.add_argument("--inv_neg_content_guidance_scale", type=float, default=0.0)
     parser.add_argument("--inv_guidance", type=float, default=0.9)
@@ -719,7 +719,7 @@ def main() -> None:
             content_embedding=content_embeddings_instruct,
             neg_style_embedding=content_style_instruct,
             neg_content_embedding=style_content_embeddings,
-            enable_guidance=False,
+            enable_guidance=True,
             used_NPI_guidance=True,
         )
 

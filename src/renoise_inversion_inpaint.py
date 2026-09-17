@@ -227,7 +227,7 @@ def inversion_step(
         )
         approximated_z_tp1 = step_out[0].detach()
 
-        # 🔥 guidance block adapted to DDIM, but intentionally disabled for now
+        # 🔥 guidance block adapted to DDIM
         if enable_guidance:
             guidance = get_guidace(
             pipe_inf=pipe_inf,

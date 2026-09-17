@@ -17,11 +17,14 @@ class RunConfig:
 
     inv_guidance_scale: float = 1.5
     guidance_scale: float = 5.0
-    style_guidance_scale: float = 0.0
-    content_guidance_scale: float = 0.0
 
-    inv_style_guidance_scale: float = 0.0
-    inv_content_guidance_scale: float = 0.0
+    # Style/content guidance should be active by default so the reference image influences inversion
+    # and the final denoising path rather than being silently disabled.
+    style_guidance_scale: float = 1.0
+    content_guidance_scale: float = 1.0
+
+    inv_style_guidance_scale: float = 1.0
+    inv_content_guidance_scale: float = 1.0
     inv_neg_style_guidance_scale: float = 0.0
     inv_neg_content_guidance_scale: float = 0.0
 
