@@ -13,7 +13,16 @@ normalize = transforms.Normalize(
 
 
 def spherical_dist_loss(x, y):
-    return -x @ y.T
+    # Ensure both are [N, D]
+    if x.ndim == 2 and y.ndim == 2 and x.shape[0] != y.shape[0]:
+        # broadcast pooled embedding to match token count
+        if x.shape[0] == 1:
+            x = x.expand(y.shape[0], -1)
+        elif y.shape[0] == 1:
+            y = y.expand(x.shape[0], -1)
+
+    return -(x @ y.T)
+
 
 
 @torch.no_grad()
