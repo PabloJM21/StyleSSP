@@ -28,7 +28,7 @@ class RunConfig:
     inv_neg_style_guidance_scale: float = 0.0
     inv_neg_content_guidance_scale: float = 0.0
 
-    get_grad_guidance: bool = True
+    get_grad_guidance: bool = False
     inv_guidance: float = 0.9
 
     num_renoise_steps: int = 9
