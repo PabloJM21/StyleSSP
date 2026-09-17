@@ -265,7 +265,7 @@ def inversion_step(
             )
 
             if pipe.do_classifier_free_guidance:
-                _, noise_pred_text = noise_pred.chunk(2)
+                # reuse noise_pred_text and noise_pred_uncond from earlier
                 scale = rescale_guidance(guidance, noise_pred_text, noise_pred_uncond, pipe.guidance_scale)
                 guidance = guidance * scale
 
